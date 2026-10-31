@@ -23,6 +23,9 @@ jobs:
           mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/xml
           
+          # --- यह कमांड पुरानी सारी गलत फाइलों को डिलीट कर देगी ---
+          rm -rf $BASE_DIR/*
+          
           # --- CREATE APP ICON ---
           cat << 'EOF' > app/src/main/res/drawable/ic_launcher.xml
           <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="24" android:viewportHeight="24">
@@ -88,8 +91,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 15
-                  versionName = "15.0"
+                  versionCode = 16
+                  versionName = "16.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -121,13 +124,23 @@ jobs:
           }
           EOF
 
-          # --- 3. Models.kt ---
+          # --- 3. Models.kt (Updated to match sample) ---
           cat << 'EOF' > $BASE_DIR/Models.kt
           package com.example.hindiscan
           import kotlinx.serialization.Serializable
           import android.net.Uri
+          
           @Serializable
-          data class Question(val topic: String = "General", val type: String = "hindi", val year: String = "", val board: String = "", val q: String = "", val options: List<String> = emptyList(), val ans: Int = 0, val exp: String = "")
+          data class Question(
+              val topic: String = "General", 
+              val type: String = "gs", 
+              val exam: String = "", 
+              val q: String = "", 
+              val options: List<String> = emptyList(), 
+              val ans: Int = 0, 
+              val exp: String = ""
+          )
+          
           data class ScanUiState(
               val isProcessing: Boolean = false, val progressText: String = "", val progress: Float = 0f,
               val questions: List<Question> = emptyList(), val rawJson: String = "", val error: String? = null,
@@ -264,7 +277,7 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt ---
+          # --- 7. AiProcessor.kt (Updated to match sample format) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import kotlinx.coroutines.Dispatchers
@@ -306,10 +319,19 @@ jobs:
               private fun buildExtractPrompt(chunk: String, targetLang: String) = """
                   You are a senior language expert. Extract EVERY authentic question from OCR text.
                   CRITICAL RULE: Output ALL extracted questions, options, and explanations STRICTLY in $targetLang language. 
-                  Also, AUTO-DETECT the subject/topic from the text and put it in the "topic" field.
-                  Rules: 1. ILLEGIBLE->SKIP. 2. NO duplicates. 3. Match questions->HTML table. 4. REMOVE answer leaks. 5. Exactly 4 UNIQUE options.
-                  6. ans=0..3(Int). 7. Output ONLY valid JSON array.
-                  JSON format: [ { "topic": "Detected Subject", "type": "general", "year": "2021", "board": "UP PGT", "q": "Question in $targetLang", "options": ["A","B","C","D"], "ans": 0, "exp": "Explanation in $targetLang" } ]
+                  
+                  Formatting Rules:
+                  1. The JSON must have EXACTLY these keys: "topic", "type", "exam", "q", "options", "ans", "exp".
+                  2. "exam": Extract the exam name (e.g., "UPPSC LT Grade 2018").
+                  3. "q": The question text MUST end with [Exam Name]. Use <br> for line breaks.
+                  4. "topic": Auto-detect and format like "सामान्य अध्ययन: [Specific Topic] ([Exam Name])".
+                  5. "options": Exactly 4 unique strings. Match options format like "1-(b), 2-(a)".
+                  6. "ans": Integer (0, 1, 2, or 3).
+                  7. "exp": Detailed explanation ending with "यह प्रश्न [Exam Name] में पूछा गया था।".
+                  8. Match the following: Use HTML <table> format with border='1', cellpadding='6', style='border-collapse:collapse; width:100%; text-align:left; margin:8px 0;'.
+                  9. Output ONLY a valid JSON array. NO markdown, NO ```json.
+                  
+                  JSON format: [ { "topic": "...", "type": "gs", "exam": "...", "q": "...", "options": ["...","...","...","..."], "ans": 0, "exp": "..." } ]
                   OCR TEXT: $chunk
               """.trimIndent()
 
@@ -318,7 +340,7 @@ jobs:
                   You are a senior language auditor. FIX and FILTER this JSON array.
                   CRITICAL RULE: Ensure ALL text is in $targetLang language.
                   1. Correct spelling/grammar. 2. Remove answer leaks. 3. Exactly 4 unique options. 4. ans must be 0..3.
-                  5. Remove meaningless questions. 6. Output ONLY JSON array of APPROVED questions.
+                  5. Output ONLY JSON array of APPROVED questions.
                   INPUT: ${json.encodeToString(batch)}
               """.trimIndent()))
 
@@ -343,7 +365,7 @@ jobs:
                           } else { throw Exception("HTTP ${resp.code}") }
                       }
                   }
-                  throw Exception("Gemini Models Failed")
+                  throw Exception("Gemini Failed")
               }
 
               private fun callGroq(prompt: String): String {
@@ -391,7 +413,16 @@ jobs:
                                   if (options.none { it.isBlank() }) {
                                       val ans = obj.optInt("ans", 0).coerceIn(0, 3)
                                       val exp = obj.optString("exp", "").trim().ifBlank { "Correct Answer: ${options[ans]}" }
-                                      list.add(Question(obj.optString("topic", "General"), obj.optString("type", "hindi"), obj.optString("year", ""), obj.optString("board", ""), q, options, ans, exp))
+                                      // Matches new Model Fields
+                                      list.add(Question(
+                                          obj.optString("topic", "General"), 
+                                          obj.optString("type", "gs"), 
+                                          obj.optString("exam", ""), 
+                                          q, 
+                                          options, 
+                                          ans, 
+                                          exp
+                                      ))
                                   }
                               }
                           } catch (_: Exception) {}
@@ -474,7 +505,7 @@ jobs:
           }
           EOF
 
-          # --- 9. UpdateChecker.kt (NEW: Auto-Updater Logic) ---
+          # --- 9. UpdateChecker.kt ---
           cat << 'EOF' > $BASE_DIR/UpdateChecker.kt
           package com.example.hindiscan
           import android.app.DownloadManager
@@ -494,7 +525,7 @@ jobs:
           import java.io.File
 
           class UpdateChecker(private val context: Context) {
-              private val GITHUB_REPO = "ramveersingh999-dot/Hindi-JSON-" // आपका रिपॉजिटरी
+              private val GITHUB_REPO = "ramveersingh999-dot/Hindi-JSON-"
               
               suspend fun checkForUpdate(): Pair<String, String>? = withContext(Dispatchers.IO) {
                   try {
@@ -505,7 +536,7 @@ jobs:
                           if (!response.isSuccessful) return@withContext null
                           val body = response.body?.string() ?: return@withContext null
                           val json = JSONObject(body)
-                          val latestVersion = json.getString("tag_name") // e.g. "v15.0"
+                          val latestVersion = json.getString("tag_name")
                           val downloadUrl = json.getJSONArray("assets").getJSONObject(0).getString("browser_download_url")
                           
                           val currentVersion = "v${BuildConfig.VERSION_NAME}"
@@ -583,7 +614,6 @@ jobs:
               var currentBaseName: String = ""
 
               init {
-                  // Auto-check for updates on startup
                   viewModelScope.launch {
                       val updateInfo = updateChecker.checkForUpdate()
                       if (updateInfo != null) {
@@ -595,7 +625,7 @@ jobs:
               fun triggerUpdate() {
                   val url = _state.value.updateUrl ?: return
                   updateChecker.downloadAndInstall(url)
-                  _state.value = _state.value.copy(updateUrl = null) // Clear after triggering
+                  _state.value = _state.value.copy(updateUrl = null)
               }
 
               fun dismissUpdate() { _state.value = _state.value.copy(updateUrl = null) }
@@ -761,7 +791,6 @@ jobs:
           ) {
               var showSettings by remember { mutableStateOf(false) }
 
-              // UPDATE DIALOG
               if (state.updateUrl != null) {
                   AlertDialog(
                       onDismissRequest = onDismissUpdate,
@@ -950,8 +979,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v15.0
-          name: HindiScan v15.0 Update
+          tag_name: v16.0
+          name: HindiScan v16.0 Update
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
