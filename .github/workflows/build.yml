@@ -21,6 +21,7 @@ jobs:
           BASE_DIR="app/src/main/java/com/example/hindiscan"
           mkdir -p $BASE_DIR
           mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/xml
           
           # --- CREATE APP ICON ---
           cat << 'EOF' > app/src/main/res/drawable/ic_launcher.xml
@@ -29,12 +30,21 @@ jobs:
           </vector>
           EOF
 
+          # --- FILE PATHS FOR UPDATER ---
+          cat << 'EOF' > app/src/main/res/xml/file_paths.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="cache" path="." />
+          </paths>
+          EOF
+
           # --- 1. AndroidManifest.xml ---
           mkdir -p app/src/main
           cat << 'EOF' > app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
               <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -51,6 +61,15 @@ jobs:
                       </intent-filter>
                   </activity>
                   <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr" />
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="\${applicationId}.fileprovider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
               </application>
           </manifest>
           EOF
@@ -69,10 +88,10 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 11
-                  versionName = "11.0"
+                  versionCode = 15
+                  versionName = "15.0"
               }
-              buildFeatures { compose = true }
+              buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -98,6 +117,7 @@ jobs:
               implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
               implementation("com.squareup.okhttp3:okhttp:4.12.0")
               implementation("androidx.security:security-crypto:1.1.0-alpha06")
+              implementation("androidx.documentfile:documentfile:1.0.1")
           }
           EOF
 
@@ -108,45 +128,28 @@ jobs:
           import android.net.Uri
           @Serializable
           data class Question(val topic: String = "General", val type: String = "hindi", val year: String = "", val board: String = "", val q: String = "", val options: List<String> = emptyList(), val ans: Int = 0, val exp: String = "")
-          @Serializable
-          data class Subject(val name: String, val topic: String, val type: String)
           data class ScanUiState(
               val isProcessing: Boolean = false, val progressText: String = "", val progress: Float = 0f,
               val questions: List<Question> = emptyList(), val rawJson: String = "", val error: String? = null,
-              val savedMsg: String? = null, val pendingUris: List<Uri>? = null, val lastSubject: Subject? = null
+              val savedMsg: String? = null, val pendingUris: List<Uri>? = null,
+              val updateUrl: String? = null, val updateVersion: String? = null
           )
-          data class ExportResult(val folderName: String, val fileCount: Int, val questionCount: Int, val partCount: Int, val zipName: String)
           data class ApiKeys(val gemini: String = "", val groq: String = "", val openai: String = "")
           EOF
 
-          # --- 4. Theme.kt (Premium Ultra Dark) ---
+          # --- 4. Theme.kt ---
           cat << 'EOF' > $BASE_DIR/Theme.kt
           package com.example.hindiscan
           import androidx.compose.material3.MaterialTheme
           import androidx.compose.material3.darkColorScheme
           import androidx.compose.runtime.Composable
           import androidx.compose.ui.graphics.Color
-
           private val PremiumDark = darkColorScheme(
-              primary = Color(0xFF8B5CF6), // Violet
-              onPrimary = Color.White,
-              primaryContainer = Color(0xFF4C1D95),
-              onPrimaryContainer = Color(0xFFEDE9FE),
-              secondary = Color(0xFF06B6D4), // Cyan
-              onSecondary = Color.White,
-              secondaryContainer = Color(0xFF164E63),
-              onSecondaryContainer = Color(0xFFCFFAFE),
-              background = Color(0xFF09090B), // Obsidian Black
-              onBackground = Color(0xFFFAFAFA),
-              surface = Color(0xFF18181B), // Dark Gray
-              onSurface = Color(0xFFFAFAFA),
-              surfaceVariant = Color(0xFF27272A),
-              onSurfaceVariant = Color(0xFFA1A1AA),
-              outline = Color(0xFF3F3F46),
-              error = Color(0xFFF87171),
-              onError = Color(0xFF450A0A),
-              errorContainer = Color(0xFF7F1D1D),
-              onErrorContainer = Color(0xFFFEE2E2)
+              primary = Color(0xFF8B5CF6), onPrimary = Color.White, primaryContainer = Color(0xFF4C1D95), onPrimaryContainer = Color(0xFFEDE9FE),
+              secondary = Color(0xFF06B6D4), onSecondary = Color.White, secondaryContainer = Color(0xFF164E63), onSecondaryContainer = Color(0xFFCFFAFE),
+              background = Color(0xFF09090B), onBackground = Color(0xFFFAFAFA), surface = Color(0xFF18181B), onSurface = Color(0xFFFAFAFA),
+              surfaceVariant = Color(0xFF27272A), onSurfaceVariant = Color(0xFFA1A1AA), outline = Color(0xFF3F3F46),
+              error = Color(0xFFF87171), onError = Color(0xFF450A0A), errorContainer = Color(0xFF7F1D1D), onErrorContainer = Color(0xFFFEE2E2)
           )
           @Composable
           fun HindiScanTheme(content: @Composable () -> Unit) { MaterialTheme(colorScheme = PremiumDark, content = content) }
@@ -158,34 +161,11 @@ jobs:
           import android.content.Context
           import androidx.security.crypto.EncryptedSharedPreferences
           import androidx.security.crypto.MasterKey
-          import kotlinx.serialization.encodeToString
-          import kotlinx.serialization.json.Json
           class AppStore(context: Context) {
               private val prefs = EncryptedSharedPreferences.create(context, "secure_prefs", MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(), EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
-              fun getKeys(): ApiKeys = ApiKeys(
-                  gemini = prefs.getString("gemini_key", "") ?: "",
-                  groq = prefs.getString("groq_key", "") ?: "",
-                  openai = prefs.getString("openai_key", "") ?: ""
-              )
-              fun saveKeys(keys: ApiKeys) {
-                  prefs.edit().apply {
-                      putString("gemini_key", keys.gemini.trim())
-                      putString("groq_key", keys.groq.trim())
-                      putString("openai_key", keys.openai.trim())
-                  }.apply()
-              }
+              fun getKeys(): ApiKeys = ApiKeys(gemini = prefs.getString("gemini_key", "") ?: "", groq = prefs.getString("groq_key", "") ?: "", openai = prefs.getString("openai_key", "") ?: "")
+              fun saveKeys(keys: ApiKeys) { prefs.edit().apply { putString("gemini_key", keys.gemini.trim()); putString("groq_key", keys.groq.trim()); putString("openai_key", keys.openai.trim()) }.apply() }
               fun clearKeys() = prefs.edit().clear().apply()
-              private val defaultSubjects = listOf(Subject("Hindi Literature", "हिंदी साहित्य", "hindi"), Subject("Hindi Grammar", "हिंदी व्याकरण", "hindi"), Subject("Sanskrit Grammar", "संस्कृत व्याकरण", "sanskrit"), Subject("History", "इतिहास", "gs"), Subject("General Knowledge", "सामान्य ज्ञान", "gs"))
-              fun getSubjects(): List<Subject> {
-                  val custom = prefs.getString("custom_subjects", "") ?: ""
-                  if (custom.isBlank()) return defaultSubjects
-                  return try { defaultSubjects + Json { ignoreUnknownKeys = true }.decodeFromString<List<Subject>>(custom) } catch (_: Exception) { defaultSubjects }
-              }
-              fun saveCustomSubject(subject: Subject) {
-                  val customOnly = getSubjects().drop(defaultSubjects.size).toMutableList()
-                  customOnly.add(subject)
-                  prefs.edit().putString("custom_subjects", Json.encodeToString(customOnly)).apply()
-              }
           }
           EOF
 
@@ -223,17 +203,15 @@ jobs:
                           val mimeType = context.contentResolver.getType(uri)
                           if (mimeType == "application/pdf") {
                               val tempFile = File.createTempFile("ocr_", ".pdf", context.cacheDir)
-                              context.contentResolver.openInputStream(uri)?.use { input ->
-                                  FileOutputStream(tempFile).use { output -> input.copyTo(output) }
-                              } ?: throw Exception("PDF file could not be opened.")
+                              context.contentResolver.openInputStream(uri)?.use { input -> FileOutputStream(tempFile).use { output -> input.copyTo(output) } } ?: throw Exception("PDF not opened.")
                               val result = recognizePdf(tempFile)
                               tempFile.delete()
                               result
                           } else {
-                              val inputStream = context.contentResolver.openInputStream(uri) ?: throw Exception("Image file could not be opened.")
+                              val inputStream = context.contentResolver.openInputStream(uri) ?: throw Exception("Image not opened.")
                               val bitmap = BitmapFactory.decodeStream(inputStream)
                               inputStream.close()
-                              if (bitmap == null) throw Exception("Image could not be decoded.")
+                              if (bitmap == null) throw Exception("Image not decoded.")
                               val image = InputImage.fromBitmap(bitmap, 0)
                               val result = pickBest(runRecognizer(devanagari, image), runRecognizer(latin, image))
                               bitmap.recycle()
@@ -241,37 +219,37 @@ jobs:
                           }
                       }
                   } catch (e: Exception) {
-                      if (e is kotlinx.coroutines.TimeoutCancellationException) throw Exception("Document took too long to process (Timeout).")
+                      if (e is kotlinx.coroutines.TimeoutCancellationException) throw Exception("Timeout. Document too large.")
                       throw e
                   }
               }
 
               private suspend fun recognizePdf(file: File): String = withContext(Dispatchers.IO) {
-                  val sb = StringBuilder(); var pfd: ParcelFileDescriptor? = null; var renderer: PdfRenderer? = null
+                  val sb = StringBuilder()
                   try {
-                      pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-                      if (pfd != null) {
-                          renderer = PdfRenderer(pfd)
-                          val pageCount = minOf(renderer.pageCount, 10)
-                          for (i in 0 until pageCount) {
-                              try {
-                                  renderer.openPage(i).use { page ->
-                                      val maxDim = maxOf(page.width, page.height).toFloat()
-                                      val scale = if (maxDim > 1500f) 1500f / maxDim else 1f
-                                      val w = (page.width * scale).toInt(); val h = (page.height * scale).toInt()
-                                      val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                                      bmp.eraseColor(Color.WHITE); page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                                      val devText = try { runRecognizer(devanagari, InputImage.fromBitmap(bmp, 0)) } catch (e: Exception) { "" }
-                                      val latText = try { runRecognizer(latin, InputImage.fromBitmap(bmp, 0)) } catch (e: Exception) { "" }
-                                      val pageText = pickBest(devText, latText)
-                                      if (pageText.isNotBlank()) sb.append(pageText).append("\n\n")
-                                      bmp.recycle()
-                                  }
-                              } catch (e: Exception) { e.printStackTrace() }
+                      ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                          PdfRenderer(pfd).use { renderer ->
+                              val pageCount = minOf(renderer.pageCount, 10)
+                              for (i in 0 until pageCount) {
+                                  try {
+                                      renderer.openPage(i).use { page ->
+                                          val maxDim = maxOf(page.width, page.height).toFloat()
+                                          val scale = if (maxDim > 1500f) 1500f / maxDim else 1f
+                                          val w = (page.width * scale).toInt(); val h = (page.height * scale).toInt()
+                                          val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                                          bmp.eraseColor(Color.WHITE); page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                          val devText = try { runRecognizer(devanagari, InputImage.fromBitmap(bmp, 0)) } catch (e: Exception) { "" }
+                                          val latText = try { runRecognizer(latin, InputImage.fromBitmap(bmp, 0)) } catch (e: Exception) { "" }
+                                          val pageText = pickBest(devText, latText)
+                                          if (pageText.isNotBlank()) sb.append(pageText).append("\n\n")
+                                          bmp.recycle()
+                                      }
+                                  } catch (e: Exception) { e.printStackTrace() }
+                              }
                           }
                       }
-                  } catch (_: Exception) {} finally { renderer?.close(); pfd?.close() }
-                  sb.toString()
+                  } catch (e: Exception) { throw Exception("PDF Render Error: ${e.message}") }
+                  return@withContext sb.toString()
               }
 
               private suspend fun runRecognizer(rec: TextRecognizer, image: InputImage): String = suspendCancellableCoroutine { cont ->
@@ -286,7 +264,7 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt (Detailed API Errors) ---
+          # --- 7. AiProcessor.kt ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import kotlinx.coroutines.Dispatchers
@@ -305,61 +283,55 @@ jobs:
               private val http = OkHttpClient.Builder().connectTimeout(60, TimeUnit.SECONDS).readTimeout(300, TimeUnit.SECONDS).build()
               private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
               
-              suspend fun process(ocrText: String, subject: Subject, onProgress: (String, Float) -> Unit): List<Question> = withContext(Dispatchers.IO) {
-                  if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) throw IllegalStateException("No API Keys found. Please add at least one.")
-                  if (ocrText.isBlank()) throw IllegalStateException("OCR returned empty text. Scan might be blank.")
+              suspend fun process(ocrText: String, targetLang: String, onProgress: (String, Float) -> Unit): List<Question> = withContext(Dispatchers.IO) {
+                  if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) throw IllegalStateException("No API Keys found.")
+                  if (ocrText.isBlank()) throw IllegalStateException("OCR returned empty text.")
                   
                   val chunks = chunkText(ocrText, 14000)
                   val extracted = mutableListOf<Question>()
                   chunks.forEachIndexed { idx, chunk ->
                       onProgress("Analyzing text (${idx + 1}/${chunks.size})...", (idx.toFloat() / chunks.size) * 0.5f)
-                      extracted += extractChunk(chunk, subject)
+                      extracted += extractChunk(chunk, targetLang)
                   }
                   val deduped = dedupe(extracted); onProgress("${deduped.size} questions found — verifying...", 0.55f)
                   val verified = mutableListOf<Question>(); val batches = deduped.chunked(12)
                   batches.forEachIndexed { idx, batch ->
                       onProgress("Verifying (${idx + 1}/${batches.size})...", 0.55f + (idx.toFloat() / batches.size) * 0.45f)
-                      try { verified += verifyBatch(batch) } catch (_: Exception) { verified += batch.filter { validateQuestion(it) } }
+                      try { verified += verifyBatch(batch, targetLang) } catch (_: Exception) { verified += batch.filter { validateQuestion(it) } }
                   }
                   val finalList = verified.filter { validateQuestion(it) }.distinctBy { normKey(it.q) }
                   onProgress("Complete: ${finalList.size} verified questions", 1f); finalList
               }
 
-              private fun buildExtractPrompt(chunk: String, subject: Subject) = """
-                  You are a senior Hindi/Sanskrit language expert. Extract EVERY authentic question from OCR text.
-                  Rules: 1. Sanskrit->Sanskrit. 2. Hindi->Hindi. 3. English->Pure Hindi. 4. ILLEGIBLE->SKIP.
-                  5. NO duplicates. 6. Match questions->HTML table. 7. REMOVE answer leaks. 8. Exactly 4 UNIQUE options.
-                  9. ans=0..3(Int). 10. Output ONLY valid JSON array.
-                  Fixed: topic="${subject.topic}", type="${subject.type}".
-                  JSON format: [ { "topic": "${subject.topic}", "type": "${subject.type}", "year": "2021", "board": "UP PGT", "q": "Question", "options": ["A","B","C","D"], "ans": 0, "exp": "Explanation" } ]
+              private fun buildExtractPrompt(chunk: String, targetLang: String) = """
+                  You are a senior language expert. Extract EVERY authentic question from OCR text.
+                  CRITICAL RULE: Output ALL extracted questions, options, and explanations STRICTLY in $targetLang language. 
+                  Also, AUTO-DETECT the subject/topic from the text and put it in the "topic" field.
+                  Rules: 1. ILLEGIBLE->SKIP. 2. NO duplicates. 3. Match questions->HTML table. 4. REMOVE answer leaks. 5. Exactly 4 UNIQUE options.
+                  6. ans=0..3(Int). 7. Output ONLY valid JSON array.
+                  JSON format: [ { "topic": "Detected Subject", "type": "general", "year": "2021", "board": "UP PGT", "q": "Question in $targetLang", "options": ["A","B","C","D"], "ans": 0, "exp": "Explanation in $targetLang" } ]
                   OCR TEXT: $chunk
               """.trimIndent()
 
-              private fun extractChunk(chunk: String, subject: Subject) = parseQuestions(callAi(buildExtractPrompt(chunk, subject)))
-              private fun verifyBatch(batch: List<Question>) = parseQuestions(callAi("""
-                  You are a senior Hindi language auditor. FIX and FILTER this JSON array.
-                  1. Correct spelling/grammar. 2. Translate English to Hindi. 3. Keep Sanskrit.
-                  4. Remove answer leaks. 5. Exactly 4 unique options. 6. ans must be 0..3.
-                  7. Remove meaningless questions. 8. Output ONLY JSON array of APPROVED questions.
+              private fun extractChunk(chunk: String, targetLang: String) = parseQuestions(callAi(buildExtractPrompt(chunk, targetLang)))
+              private fun verifyBatch(batch: List<Question>, targetLang: String) = parseQuestions(callAi("""
+                  You are a senior language auditor. FIX and FILTER this JSON array.
+                  CRITICAL RULE: Ensure ALL text is in $targetLang language.
+                  1. Correct spelling/grammar. 2. Remove answer leaks. 3. Exactly 4 unique options. 4. ans must be 0..3.
+                  5. Remove meaningless questions. 6. Output ONLY JSON array of APPROVED questions.
                   INPUT: ${json.encodeToString(batch)}
               """.trimIndent()))
 
               private fun callAi(prompt: String): String {
                   var errorMsg = ""
-                  if (keys.gemini.isNotBlank()) {
-                      try { return callGemini(prompt) } catch (e: Exception) { errorMsg += "Gemini: ${e.message}\n" }
-                  }
-                  if (keys.groq.isNotBlank()) {
-                      try { return callGroq(prompt) } catch (e: Exception) { errorMsg += "Groq: ${e.message}\n" }
-                  }
-                  if (keys.openai.isNotBlank()) {
-                      try { return callOpenAi(prompt) } catch (e: Exception) { errorMsg += "OpenAI: ${e.message}\n" }
-                  }
+                  if (keys.gemini.isNotBlank()) { try { return callGemini(prompt) } catch (e: Exception) { errorMsg += "Gemini: ${e.message}\n" } }
+                  if (keys.groq.isNotBlank()) { try { return callGroq(prompt) } catch (e: Exception) { errorMsg += "Groq: ${e.message}\n" } }
+                  if (keys.openai.isNotBlank()) { try { return callOpenAi(prompt) } catch (e: Exception) { errorMsg += "OpenAI: ${e.message}\n" } }
                   throw Exception("API Failed:\n$errorMsg")
               }
 
               private fun callGemini(prompt: String): String {
-                  val models = listOf("gemini-1.5-flash", "gemini-1.5-pro")
+                  val models = listOf("gemini-2.0-flash", "gemini-2.5-flash")
                   for (model in models) {
                       val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${keys.gemini}"
                       val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
@@ -368,10 +340,7 @@ jobs:
                           if (resp.isSuccessful) {
                               val text = JSONObject(resp.body!!.string()).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
                               if (text.isNotBlank()) return text
-                          } else {
-                              val err = resp.body?.string()?.take(50) ?: "Unknown Error"
-                              throw Exception("HTTP ${resp.code} ($err)")
-                          }
+                          } else { throw Exception("HTTP ${resp.code}") }
                       }
                   }
                   throw Exception("Gemini Models Failed")
@@ -379,7 +348,7 @@ jobs:
 
               private fun callGroq(prompt: String): String {
                   val url = "https://api.groq.com/openai/v1/chat/completions"
-                  val payload = JSONObject().put("model", "llama3-70b-8192")
+                  val payload = JSONObject().put("model", "llama-3.3-70b-versatile")
                       .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
                       .put("temperature", 0.05).toString()
                   val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.groq}").post(payload.toRequestBody("application/json".toMediaType())).build()
@@ -387,10 +356,7 @@ jobs:
                       if (resp.isSuccessful) {
                           val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
                           if (text.isNotBlank()) return text
-                      } else {
-                          val err = resp.body?.string()?.take(50) ?: "Unknown Error"
-                          throw Exception("HTTP ${resp.code} ($err)")
-                      }
+                      } else { throw Exception("HTTP ${resp.code}") }
                   }
                   throw Exception("Groq Failed")
               }
@@ -405,10 +371,7 @@ jobs:
                       if (resp.isSuccessful) {
                           val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
                           if (text.isNotBlank()) return text
-                      } else {
-                          val err = resp.body?.string()?.take(50) ?: "Unknown Error"
-                          throw Exception("HTTP ${resp.code} ($err)")
-                      }
+                      } else { throw Exception("HTTP ${resp.code}") }
                   }
                   throw Exception("OpenAI Failed")
               }
@@ -440,7 +403,6 @@ jobs:
               fun validateQuestion(q: Question): Boolean {
                   if (q.q.isBlank() || q.options.size != 4 || q.options.any { it.isBlank() } || q.options.distinct().size != 4) return false
                   if (q.ans !in 0..3 || q.q.length < 8) return false
-                  if (q.options.filterIndexed { i, _ -> i != q.ans }.any { Regex("(उत्तर|answer|Ans)\\s*[:：]?\\s*[A-D1-4]", RegexOption.IGNORE_CASE).containsMatchIn(it) }) return false
                   return true
               }
               private fun dedupe(qs: List<Question>): List<Question> { val seen = HashSet<String>(); val out = mutableListOf<Question>(); for (q in qs) if (seen.add(normKey(q.q))) out.add(q); return out }
@@ -460,11 +422,9 @@ jobs:
           # --- 8. PackExporter.kt ---
           cat << 'EOF' > $BASE_DIR/PackExporter.kt
           package com.example.hindiscan
-          import android.content.ContentValues
           import android.content.Context
-          import android.os.Build
-          import android.os.Environment
-          import android.provider.MediaStore
+          import android.net.Uri
+          import androidx.documentfile.provider.DocumentFile
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.withContext
           import kotlinx.serialization.encodeToString
@@ -478,39 +438,121 @@ jobs:
           import java.util.Locale
           import java.util.zip.ZipEntry
           import java.util.zip.ZipOutputStream
+          
           class PackExporter(private val context: Context) {
               private val json = Json { prettyPrint = true; encodeDefaults = true }
-              suspend fun export(questions: List<Question>, batchLabel: String = "Batch01"): ExportResult = withContext(Dispatchers.IO) {
+              
+              suspend fun generateJson(questions: List<Question>): Pair<String, Map<String, String>> = withContext(Dispatchers.IO) {
                   require(questions.isNotEmpty()) { "No questions available." }
-                  val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()); val baseName = "HindiScan_${batchLabel}_${timestamp}"
+                  val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                  val baseName = "HindiScan_${timestamp}"
                   val masterJson = json.encodeToString(questions); JSONArray(masterJson)
-                  val files = linkedMapOf<String, String>(); files["${baseName}_Master_${questions.size}Q.json"] = masterJson
-                  val parts = if (questions.size > 900) questions.chunked(850) else emptyList()
-                  parts.forEachIndexed { idx, chunk -> files["${baseName}_Part_${String.format("%02d", idx + 1)}_${chunk.size}Q.json"] = json.encodeToString(chunk) }
-                  writeToDownloads("${baseName}_Pack", baseName, files)
-                  ExportResult("Downloads/HindiScan_Packs/${baseName}_Pack", files.size + 1, questions.size, parts.size, "$baseName.zip")
+                  val files = linkedMapOf<String, String>()
+                  files["${baseName}_Master_${questions.size}Q.json"] = masterJson
+                  Pair(baseName, files)
               }
-              private fun writeToDownloads(folderName: String, baseName: String, files: Map<String, String>) {
-                  val zipFile = File(context.cacheDir, "$baseName.zip")
-                  ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos -> for ((name, content) in files) { zos.putNextEntry(ZipEntry(name)); zos.write(content.toByteArray(Charsets.UTF_8)); zos.closeEntry() } }
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      val downloads = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY); val relFolder = "${Environment.DIRECTORY_DOWNLOADS}/HindiScan_Packs/$folderName"
-                      for ((name, content) in files) {
-                          val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, name); put(MediaStore.MediaColumns.MIME_TYPE, "application/json"); put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder) }
-                          context.contentResolver.insert(downloads, values)?.let { uri -> context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) } }
+
+              suspend fun saveToSelectedFolder(folderUri: Uri, baseName: String, files: Map<String, String>): Boolean = withContext(Dispatchers.IO) {
+                  try {
+                      val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext false
+                      val zipFile = File(context.cacheDir, "$baseName.zip")
+                      ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos ->
+                          for ((name, content) in files) {
+                              zos.putNextEntry(ZipEntry(name)); zos.write(content.toByteArray(Charsets.UTF_8)); zos.closeEntry()
+                          }
                       }
-                      val zipValues = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, "$baseName.zip"); put(MediaStore.MediaColumns.MIME_TYPE, "application/zip"); put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/HindiScan_Packs") }
-                      context.contentResolver.insert(downloads, zipValues)?.let { uri -> context.contentResolver.openOutputStream(uri)?.use { zipFile.inputStream().copyTo(it) } }
-                  } else {
-                      @Suppress("DEPRECATION") val base = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HindiScan_Packs").apply { mkdirs() }
-                      val folder = File(base, folderName).apply { mkdirs() }; for ((name, content) in files) File(folder, name).writeText(content, Charsets.UTF_8); File(base, "$baseName.zip").writeBytes(zipFile.readBytes())
-                  }
-                  zipFile.delete()
+                      for ((name, content) in files) {
+                          val file = root.createFile("application/json", name)
+                          file?.uri?.let { uri -> context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) } }
+                      }
+                      val zipDoc = root.createFile("application/zip", "$baseName.zip")
+                      zipDoc?.uri?.let { uri -> context.contentResolver.openOutputStream(uri)?.use { zipFile.inputStream().copyTo(it) } }
+                      zipFile.delete()
+                      return@withContext true
+                  } catch (e: Exception) { e.printStackTrace(); return@withContext false }
               }
           }
           EOF
 
-          # --- 9. ScanViewModel.kt ---
+          # --- 9. UpdateChecker.kt (NEW: Auto-Updater Logic) ---
+          cat << 'EOF' > $BASE_DIR/UpdateChecker.kt
+          package com.example.hindiscan
+          import android.app.DownloadManager
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Environment
+          import androidx.core.content.FileProvider
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import org.json.JSONObject
+          import java.io.File
+
+          class UpdateChecker(private val context: Context) {
+              private val GITHUB_REPO = "ramveersingh999-dot/Hindi-JSON-" // आपका रिपॉजिटरी
+              
+              suspend fun checkForUpdate(): Pair<String, String>? = withContext(Dispatchers.IO) {
+                  try {
+                      val url = "https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+                      val request = Request.Builder().url(url).build()
+                      val client = OkHttpClient()
+                      client.newCall(request).execute().use { response ->
+                          if (!response.isSuccessful) return@withContext null
+                          val body = response.body?.string() ?: return@withContext null
+                          val json = JSONObject(body)
+                          val latestVersion = json.getString("tag_name") // e.g. "v15.0"
+                          val downloadUrl = json.getJSONArray("assets").getJSONObject(0).getString("browser_download_url")
+                          
+                          val currentVersion = "v${BuildConfig.VERSION_NAME}"
+                          if (latestVersion != currentVersion) {
+                              return@withContext Pair(latestVersion, downloadUrl)
+                          }
+                      }
+                  } catch (e: Exception) { e.printStackTrace() }
+                  return@withContext null
+              }
+
+              fun downloadAndInstall(url: String) {
+                  val request = DownloadManager.Request(Uri.parse(url))
+                      .setTitle("HindiScan Update")
+                      .setDescription("Downloading new version...")
+                      .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                      .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "update.apk")
+                      .setMimeType("application/vnd.android.package-archive")
+
+                  val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                  val downloadId = downloadManager.enqueue(request)
+
+                  val onDownloadComplete = object : BroadcastReceiver() {
+                      override fun onReceive(context: Context, intent: Intent) {
+                          val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+                          if (id == downloadId) {
+                              val file = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "update.apk")
+                              val apkUri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                              val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                                  setDataAndType(apkUri, "application/vnd.android.package-archive")
+                                  addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                              }
+                              context.startActivity(installIntent)
+                          }
+                      }
+                  }
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      context.registerReceiver(onDownloadComplete, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_EXPORTED)
+                  } else {
+                      context.registerReceiver(onDownloadComplete, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+                  }
+              }
+          }
+          EOF
+
+          # --- 10. ScanViewModel.kt ---
           cat << 'EOF' > $BASE_DIR/ScanViewModel.kt
           package com.example.hindiscan
           import android.app.Activity
@@ -534,8 +576,29 @@ jobs:
 
           class ScanViewModel(app: Application) : AndroidViewModel(app) {
               private val ocr = OcrEngine(app); private val exporter = PackExporter(app); val store = AppStore(app)
+              private val updateChecker = UpdateChecker(app)
               private val _state = MutableStateFlow(ScanUiState()); val state = _state.asStateFlow()
               private var processingJob: Job? = null
+              var currentGeneratedFiles: Map<String, String> = emptyMap()
+              var currentBaseName: String = ""
+
+              init {
+                  // Auto-check for updates on startup
+                  viewModelScope.launch {
+                      val updateInfo = updateChecker.checkForUpdate()
+                      if (updateInfo != null) {
+                          _state.value = _state.value.copy(updateUrl = updateInfo.second, updateVersion = updateInfo.first)
+                      }
+                  }
+              }
+
+              fun triggerUpdate() {
+                  val url = _state.value.updateUrl ?: return
+                  updateChecker.downloadAndInstall(url)
+                  _state.value = _state.value.copy(updateUrl = null) // Clear after triggering
+              }
+
+              fun dismissUpdate() { _state.value = _state.value.copy(updateUrl = null) }
 
               fun startScanner(activity: Activity, launch: (IntentSenderRequest) -> Unit) {
                   val options = GmsDocumentScannerOptions.Builder().setGalleryImportAllowed(true).setPageLimit(200)
@@ -553,24 +616,17 @@ jobs:
                   _state.value = ScanUiState(pendingUris = uris)
               }
               
-              fun processWithSubject(subject: Subject) {
+              fun processWithLanguage(targetLang: String) {
                   val uris = _state.value.pendingUris ?: return; val keys = store.getKeys()
                   if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) { 
-                      _state.value = _state.value.copy(error = "Please set at least one API Key in settings (⚙).", pendingUris = null) 
+                      _state.value = _state.value.copy(error = "Please set at least one API Key.", pendingUris = null) 
                       return 
                   }
-                  _state.value = _state.value.copy(lastSubject = subject)
-                  runProcessing(uris, subject, keys)
+                  _state.value = _state.value.copy(pendingUris = null)
+                  runProcessing(uris, targetLang, keys)
               }
 
-              fun retryProcessing() {
-                  val uris = _state.value.pendingUris ?: return
-                  val subject = _state.value.lastSubject ?: return
-                  val keys = store.getKeys()
-                  runProcessing(uris, subject, keys)
-              }
-
-              private fun runProcessing(uris: List<Uri>, subject: Subject, keys: ApiKeys) {
+              private fun runProcessing(uris: List<Uri>, targetLang: String, keys: ApiKeys) {
                   processingJob = viewModelScope.launch {
                       _state.value = _state.value.copy(isProcessing = true, error = null, progressText = "Starting OCR...", progress = 0f)
                       try {
@@ -582,14 +638,18 @@ jobs:
                           val ocrText = sb.toString()
                           if (ocrText.isBlank()) throw Exception("OCR returned empty text. Image may be unclear.")
                           
-                          val questions = withContext(Dispatchers.IO) { AiProcessor(keys).process(ocrText, subject) { msg, prog -> _state.value = _state.value.copy(progressText = msg, progress = 0.15f + prog * 0.85f) } }
+                          val questions = withContext(Dispatchers.IO) { AiProcessor(keys).process(ocrText, targetLang) { msg, prog -> _state.value = _state.value.copy(progressText = msg, progress = 0.15f + prog * 0.85f) } }
                           if (questions.isEmpty()) throw Exception("AI could not extract any valid questions.")
                           
                           val jsonStr = Json { prettyPrint = true; encodeDefaults = true }.encodeToString(questions)
+                          val (baseName, files) = exporter.generateJson(questions)
+                          currentBaseName = baseName
+                          currentGeneratedFiles = files
+                          
                           _state.value = _state.value.copy(questions = questions, rawJson = jsonStr, progressText = "Done: ${questions.size} questions", progress = 1f, isProcessing = false)
                       } catch (e: Exception) { 
                           if (e is kotlinx.coroutines.CancellationException) {
-                              _state.value = _state.value.copy(isProcessing = false, pendingUris = null, error = "Processing cancelled.")
+                              _state.value = _state.value.copy(isProcessing = false, error = "Processing cancelled.")
                           } else {
                               _state.value = _state.value.copy(isProcessing = false, error = e.message ?: "Unknown Error") 
                           }
@@ -597,26 +657,27 @@ jobs:
                   }
               }
 
+              fun saveToFolder(folderUri: Uri) {
+                  viewModelScope.launch {
+                      _state.value = _state.value.copy(progressText = "Saving files...", isProcessing = true)
+                      val success = exporter.saveToSelectedFolder(folderUri, currentBaseName, currentGeneratedFiles)
+                      _state.value = _state.value.copy(
+                          isProcessing = false, 
+                          savedMsg = if (success) "✓ Files saved to selected folder!" else "Failed to save files."
+                      )
+                  }
+              }
+
               fun cancelProcessing() { 
                   processingJob?.cancel(); processingJob = null; 
                   _state.value = _state.value.copy(isProcessing = false, pendingUris = null, error = "Processing cancelled.") 
-              }
-              fun export() {
-                  val questions = _state.value.questions
-                  if (questions.isEmpty()) { _state.value = _state.value.copy(error = "No questions to export."); return }
-                  viewModelScope.launch {
-                      try {
-                          val result = exporter.export(questions)
-                          _state.value = _state.value.copy(savedMsg = "✓ Saved ${result.questionCount} questions to ${result.folderName}")
-                      } catch (e: Exception) { _state.value = _state.value.copy(error = "Save failed: ${e.message}") }
-                  }
               }
               fun cancelSelection() { _state.value = _state.value.copy(pendingUris = null) }
               override fun onCleared() { super.onCleared(); ocr.close() }
           }
           EOF
 
-          # --- 10. MainActivity.kt ---
+          # --- 11. MainActivity.kt ---
           cat << 'EOF' > $BASE_DIR/MainActivity.kt
           package com.example.hindiscan
           import android.app.Activity
@@ -635,25 +696,27 @@ jobs:
               private val pdfLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
                   if (uri != null) vm.onPdfSelected(uri)
               }
+              private val folderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                  if (uri != null) vm.saveToFolder(uri)
+              }
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   setContent {
                       HindiScanTheme {
                           val state by vm.state.collectAsState()
                           var apiKeys by remember { mutableStateOf(vm.store.getKeys()) }
-                          var subjects by remember { mutableStateOf(vm.store.getSubjects()) }
                           ScanScreen(
-                              state = state, keys = apiKeys, subjects = subjects,
+                              state = state, keys = apiKeys,
                               onStartScan = { vm.startScanner(this) { launcher.launch(it) } },
                               onPickPdf = { pdfLauncher.launch("application/pdf") },
                               onSaveKeys = { keys -> apiKeys = keys; vm.store.saveKeys(keys) },
                               onRemoveKeys = { apiKeys = ApiKeys(); vm.store.clearKeys() },
-                              onExport = { vm.export() },
-                              onSubjectSelected = { vm.processWithSubject(it) },
+                              onPickFolder = { folderLauncher.launch(null) },
+                              onLanguageSelected = { lang -> vm.processWithLanguage(lang) },
                               onCancelSelection = { vm.cancelSelection() },
                               onCancelProcessing = { vm.cancelProcessing() },
-                              onRetry = { vm.retryProcessing() },
-                              onAddSubject = { sub -> vm.store.saveCustomSubject(sub); subjects = vm.store.getSubjects() }
+                              onUpdateApp = { vm.triggerUpdate() },
+                              onDismissUpdate = { vm.dismissUpdate() }
                           )
                       }
                   }
@@ -661,7 +724,7 @@ jobs:
           }
           EOF
 
-          # --- 11. MainScreen.kt (Fixed Import) ---
+          # --- 12. MainScreen.kt ---
           cat << 'EOF' > $BASE_DIR/MainScreen.kt
           package com.example.hindiscan
           import androidx.compose.foundation.background
@@ -672,7 +735,6 @@ jobs:
           import androidx.compose.foundation.text.selection.SelectionContainer
           import androidx.compose.foundation.verticalScroll
           import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.filled.Add
           import androidx.compose.material.icons.filled.Settings
           import androidx.compose.material3.*
           import androidx.compose.runtime.*
@@ -692,12 +754,24 @@ jobs:
           @OptIn(ExperimentalMaterial3Api::class)
           @Composable
           fun ScanScreen(
-              state: ScanUiState, keys: ApiKeys, subjects: List<Subject>,
+              state: ScanUiState, keys: ApiKeys,
               onStartScan: () -> Unit, onPickPdf: () -> Unit, onSaveKeys: (ApiKeys) -> Unit, onRemoveKeys: () -> Unit,
-              onExport: () -> Unit, onSubjectSelected: (Subject) -> Unit, onCancelSelection: () -> Unit, onCancelProcessing: () -> Unit, onRetry: () -> Unit, onAddSubject: (Subject) -> Unit
+              onPickFolder: () -> Unit, onLanguageSelected: (String) -> Unit, onCancelSelection: () -> Unit, onCancelProcessing: () -> Unit,
+              onUpdateApp: () -> Unit, onDismissUpdate: () -> Unit
           ) {
               var showSettings by remember { mutableStateOf(false) }
-              var showAddSubject by remember { mutableStateOf(false) }
+
+              // UPDATE DIALOG
+              if (state.updateUrl != null) {
+                  AlertDialog(
+                      onDismissRequest = onDismissUpdate,
+                      title = { Text("New Update Available!", fontWeight = FontWeight.Bold) },
+                      text = { Text("A new version (${state.updateVersion}) of HindiScan is available. Do you want to download and install it now?") },
+                      confirmButton = { Button(onClick = onUpdateApp) { Text("Download & Install") } },
+                      dismissButton = { TextButton(onClick = onDismissUpdate) { Text("Later") } },
+                      shape = RoundedCornerShape(16.dp)
+                  )
+              }
 
               if (showSettings) {
                   var geminiKey by remember { mutableStateOf(keys.gemini) }
@@ -706,47 +780,32 @@ jobs:
                   AlertDialog(
                       onDismissRequest = { showSettings = false }, title = { Text("API Configuration", fontWeight = FontWeight.Bold) },
                       text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
-                          Text("At least one API key is required. All keys are encrypted locally.", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                          Text("At least one API key is required.", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
                           OutlinedTextField(value = geminiKey, onValueChange = { geminiKey = it }, label = { Text("Gemini API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
                           OutlinedTextField(value = groqKey, onValueChange = { groqKey = it }, label = { Text("Groq API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
                           OutlinedTextField(value = openAiKey, onValueChange = { openAiKey = it }, label = { Text("OpenAI API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
                       } },
-                      confirmButton = { Button(onClick = { onSaveKeys(ApiKeys(geminiKey, groqKey, openAiKey)); showSettings = false }, shape = RoundedCornerShape(8.dp)) { Text("Save Keys") } },
+                      confirmButton = { Button(onClick = { onSaveKeys(ApiKeys(geminiKey, groqKey, openAiKey)); showSettings = false }) { Text("Save Keys") } },
                       dismissButton = { if (keys.gemini.isNotBlank() || keys.groq.isNotBlank() || keys.openai.isNotBlank()) TextButton(onClick = { onRemoveKeys(); showSettings = false }) { Text("Clear All", color = MaterialTheme.colorScheme.error) } }
-                  )
-              }
-
-              if (showAddSubject) {
-                  var name by remember { mutableStateOf("") }; var topic by remember { mutableStateOf("") }; var type by remember { mutableStateOf("hindi") }
-                  AlertDialog(
-                      onDismissRequest = { showAddSubject = false }, title = { Text("Add New Subject", fontWeight = FontWeight.Bold) },
-                      text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                          OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-                          OutlinedTextField(topic, { topic = it }, label = { Text("Topic Tag") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-                          OutlinedTextField(type, { type = it }, label = { Text("Type (e.g. hindi, gs, science)") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-                      } },
-                      confirmButton = { Button(onClick = { if (name.isNotBlank()) { onAddSubject(Subject(name, topic.ifBlank { name }, type)); showAddSubject = false } }, shape = RoundedCornerShape(8.dp)) { Text("Add") } },
-                      dismissButton = { TextButton(onClick = { showAddSubject = false }) { Text("Cancel") } }
                   )
               }
 
               if (state.pendingUris != null && !state.isProcessing) {
                   AlertDialog(
-                      onDismissRequest = onCancelSelection, title = { Text("Select Subject", fontWeight = FontWeight.Bold) },
-                      text = { Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 400.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                          subjects.forEach { sub ->
-                              Card(modifier = Modifier.fillMaxWidth(), onClick = { onSubjectSelected(sub) }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(12.dp)) {
-                                  Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                      Text(sub.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                                      Spacer(Modifier.weight(1f))
-                                      Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(6.dp)) {
-                                          Text(sub.type, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
-                                      }
-                                  }
-                              }
+                      onDismissRequest = onCancelSelection,
+                      title = { Text("Select Output Language", fontWeight = FontWeight.Bold) },
+                      text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                          Text("In which language should the JSON pack be generated?", fontSize = 14.sp)
+                          listOf("Hindi", "English", "Sanskrit").forEach { lang ->
+                              Button(
+                                  onClick = { onLanguageSelected(lang) }, 
+                                  modifier = Modifier.fillMaxWidth().height(50.dp),
+                                  shape = RoundedCornerShape(12.dp),
+                                  colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
+                              ) { Text(lang, fontSize = 16.sp, fontWeight = FontWeight.Medium) }
                           }
                       } },
-                      confirmButton = { TextButton(onClick = onCancelSelection) { Text("Cancel") } }
+                      confirmButton = { TextButton(onClick = onCancelSelection) { Text("Cancel", color = MaterialTheme.colorScheme.error) } }
                   )
               }
 
@@ -755,14 +814,8 @@ jobs:
               Scaffold(
                   topBar = { 
                       TopAppBar(
-                          title = { 
-                              Column { 
-                                  Text("HindiScan AI", fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = MaterialTheme.colorScheme.primary) 
-                                  Text("PREMIUM MULTI-AI ENGINE", fontSize = 10.sp, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) 
-                              } 
-                          }, 
+                          title = { Column { Text("HindiScan AI", fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = MaterialTheme.colorScheme.primary); Text("PREMIUM MULTI-AI ENGINE", fontSize = 10.sp, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, 
                           actions = {
-                              IconButton(onClick = { showAddSubject = true }) { Icon(Icons.Default.Add, contentDescription = "Add Subject", tint = MaterialTheme.colorScheme.onSurface) }
                               IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = if (!hasAnyKey) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary) }
                           }, 
                           colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -773,22 +826,12 @@ jobs:
                       
                       if (!hasAnyKey) { 
                           Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), shape = RoundedCornerShape(12.dp)) { 
-                              Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { 
-                                  Text("⚠️", fontSize = 24.sp)
-                                  Spacer(Modifier.width(12.dp))
-                                  Text("No API keys configured. Tap settings to add one.", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Medium) 
-                              } 
+                              Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text("⚠️", fontSize = 24.sp); Spacer(Modifier.width(12.dp)); Text("No API keys configured.", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Medium) } 
                           } 
                       }
                       
-                      // Premium Gradient Button
                       Box(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .height(72.dp)
-                              .clip(RoundedCornerShape(24.dp))
-                              .background(Brush.horizontalGradient(listOf(Color(0xFF8B5CF6), Color(0xFF06B6D4))))
-                              .clickable(enabled = !state.isProcessing && hasAnyKey) { onStartScan() },
+                          modifier = Modifier.fillMaxWidth().height(72.dp).clip(RoundedCornerShape(24.dp)).background(Brush.horizontalGradient(listOf(Color(0xFF8B5CF6), Color(0xFF06B6D4)))).clickable(enabled = !state.isProcessing && hasAnyKey) { onStartScan() },
                           contentAlignment = Alignment.Center
                       ) {
                           Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
@@ -800,7 +843,6 @@ jobs:
                           }
                       }
 
-                      // PDF Button
                       OutlinedButton(
                           onClick = onPickPdf, 
                           enabled = !state.isProcessing && hasAnyKey, 
@@ -809,26 +851,21 @@ jobs:
                           border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary),
                           shape = RoundedCornerShape(24.dp)
                       ) {
-                          Row(verticalAlignment = Alignment.CenterVertically) {
-                              Text("📄", fontSize = 24.sp, modifier = Modifier.padding(end = 12.dp))
-                              Text("SELECT PDF FILE", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                          }
+                          Row(verticalAlignment = Alignment.CenterVertically) { Text("📄", fontSize = 24.sp, modifier = Modifier.padding(end = 12.dp)); Text("SELECT PDF FILE", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
                       }
 
                       if (state.isProcessing) { 
-                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(4.dp)) { 
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp)) { 
                               Column(Modifier.padding(20.dp)) { 
                                   Row(verticalAlignment = Alignment.CenterVertically) { 
-                                      CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp, color = MaterialTheme.colorScheme.primary)
+                                      CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
                                       Spacer(Modifier.width(16.dp))
-                                      Text(state.progressText, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis) 
+                                      Text(state.progressText, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) 
                                   }
                                   Spacer(Modifier.height(16.dp))
-                                  LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.surfaceVariant)
+                                  LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)))
                                   Spacer(Modifier.height(16.dp))
-                                  TextButton(onClick = onCancelProcessing, modifier = Modifier.fillMaxWidth()) {
-                                      Text("Cancel Processing", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                                  }
+                                  TextButton(onClick = onCancelProcessing, modifier = Modifier.fillMaxWidth()) { Text("Cancel Processing", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) }
                               } 
                           } 
                       }
@@ -836,27 +873,16 @@ jobs:
                       state.error?.let { err -> 
                           Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { 
                               Column(Modifier.padding(16.dp)) {
-                                  Text("Error Details", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
+                                  Text("Error Details", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
                                   Spacer(Modifier.height(8.dp))
                                   SelectionContainer { Text(err, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp, fontFamily = FontFamily.Monospace) }
-                                  
-                                  if (state.pendingUris != null) {
-                                      Spacer(Modifier.height(16.dp))
-                                      Button(onClick = onRetry, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), shape = RoundedCornerShape(12.dp)) {
-                                          Text("Try Again", color = Color.White, fontWeight = FontWeight.Bold)
-                                      }
-                                  }
                               }
                           } 
                       }
                       
                       state.savedMsg?.let { 
                           Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer), shape = RoundedCornerShape(16.dp)) { 
-                              Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                  Text("✅", fontSize = 20.sp)
-                                  Spacer(Modifier.width(12.dp))
-                                  Text(it, color = MaterialTheme.colorScheme.onSecondaryContainer, fontWeight = FontWeight.Medium) 
-                              }
+                              Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text("✅", fontSize = 20.sp); Spacer(Modifier.width(12.dp)); Text(it, color = MaterialTheme.colorScheme.onSecondaryContainer) } 
                           } 
                       }
 
@@ -869,12 +895,12 @@ jobs:
                           Spacer(Modifier.height(16.dp))
                           
                           Button(
-                              onClick = onExport, 
+                              onClick = onPickFolder, 
                               modifier = Modifier.fillMaxWidth().height(56.dp), 
                               colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary), 
                               shape = RoundedCornerShape(16.dp)
                           ) { 
-                              Text("⬇ DOWNLOAD JSON PACK", fontWeight = FontWeight.Bold, fontSize = 15.sp) 
+                              Text("📂 SAVE TO CUSTOM FOLDER", fontWeight = FontWeight.Bold, fontSize = 15.sp) 
                           }
                           
                           Spacer(Modifier.height(20.dp))
@@ -919,7 +945,17 @@ jobs:
           cd project_folder
           gradle assembleDebug
 
-      - name: Upload APK
+      # यह स्टेप APK को GitHub Releases में अपने आप अपलोड कर देगा
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: project_folder/app/build/outputs/apk/debug/app-debug.apk
+          tag_name: v15.0
+          name: HindiScan v15.0 Update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HindiScan-APK
