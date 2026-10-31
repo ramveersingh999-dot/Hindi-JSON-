@@ -93,8 +93,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 24
-                  versionName = "24.0"
+                  versionCode = 25
+                  versionName = "25.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -333,7 +333,7 @@ jobs:
           }
           EOF
 
-          # --- 8. AiProcessor.kt (Smart JSON Parsing & Strict Prompts) ---
+          # --- 8. AiProcessor.kt (FIXED CHUNKING & TOKEN LIMITS) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import android.content.Context
@@ -358,7 +358,8 @@ jobs:
                   if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) throw IllegalStateException("No API Keys found.")
                   if (ocrText.isBlank()) throw IllegalStateException("OCR returned empty text.")
                   
-                  val chunks = chunkText(ocrText, 14000)
+                  // REDUCED CHUNK SIZE to prevent hitting output token limits
+                  val chunks = chunkText(ocrText, 3500)
                   val extracted = mutableListOf<Question>()
                   chunks.forEachIndexed { idx, chunk ->
                       onProgress("Analyzing text (${idx + 1}/${chunks.size})...", (idx.toFloat() / chunks.size) * 0.5f)
@@ -377,7 +378,7 @@ jobs:
               private fun buildExtractPrompt(chunk: String, targetLang: String): String {
                   val remotePrompt = store.getRemotePrompt()
                   if (remotePrompt.isNotBlank()) {
-                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk) + "\n\nCRITICAL: DO NOT output any conversational text. Output ONLY the JSON array starting with [ and ending with ]."
+                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk) + "\n\nCRITICAL: DO NOT output any conversational text. Output ONLY the JSON array starting with [ and ending with ]. Keep explanations brief if not provided in text."
                   }
                   return """
                       You are a senior language expert. Extract EVERY authentic question from OCR text.
@@ -390,7 +391,7 @@ jobs:
                       4. "topic": Auto-detect and format like "सामान्य अध्ययन: [Specific Topic] ([Exam Name])".
                       5. "options": Exactly 4 unique strings. Match options format like "1-(b), 2-(a)".
                       6. "ans": Integer (0, 1, 2, or 3).
-                      7. "exp": Detailed explanation ending with "यह प्रश्न [Exam Name] में पूछा गया था।".
+                      7. "exp": Detailed explanation. (If missing from text, keep it brief).
                       8. Match the following: Use HTML <table> format with border='1', cellpadding='6', style='border-collapse:collapse; width:100%; text-align:left; margin:8px 0;'.
                       9. Output ONLY a valid JSON array. NO markdown, NO ```json.
                       
@@ -554,20 +555,11 @@ jobs:
 
               // SMART JSON PARSING
               private fun parseQuestions(raw: String): List<Question> {
-                  // 1. Remove Markdown code blocks
                   var cleaned = raw.trim().replace("```json", "").replace("```", "").trim()
-                  
-                  // 2. Find the first '[' and the last ']'
                   val start = cleaned.indexOf('[')
                   val end = cleaned.lastIndexOf(']')
-                  
-                  if (start == -1 || end == -1 || end <= start) {
-                      throw Exception("AI did not return JSON array. Raw response start: ${cleaned.take(50)}...")
-                  }
-                  
-                  // 3. Extract only the JSON part
+                  if (start == -1 || end == -1 || end <= start) throw Exception("AI did not return JSON array. Raw response start: ${cleaned.take(50)}...")
                   cleaned = cleaned.substring(start, end + 1)
-                  
                   return try {
                       val arr = JSONArray(cleaned); val list = mutableListOf<Question>()
                       for (i in 0 until arr.length()) {
@@ -594,12 +586,24 @@ jobs:
               }
               private fun dedupe(qs: List<Question>): List<Question> { val seen = HashSet<String>(); val out = mutableListOf<Question>(); for (q in qs) if (seen.add(normKey(q.q))) out.add(q); return out }
               private fun normKey(text: String) = text.lowercase().replace(Regex("<[^>]+>"), "").replace(Regex("[\\s\\p{Punct}]+"), "").trim()
+              
+              // REDUCED CHUNK SIZE FUNCTION
               private fun chunkText(text: String, maxChars: Int): List<String> {
                   if (text.length <= maxChars) return listOf(text)
                   val chunks = mutableListOf<String>(); var start = 0
                   while (start < text.length) {
-                      var end = minOf(start + maxChars, text.length); if (end < text.length) { val nl = text.lastIndexOf('\n', end); if (nl > start + maxChars / 2) end = nl }
-                      chunks.add(text.substring(start, end)); start = end
+                      var end = minOf(start + maxChars, text.length)
+                      if (end < text.length) {
+                          // Try to split at newline or period to keep context
+                          val nl = text.lastIndexOf('\n', end)
+                          if (nl > start + (maxChars / 2)) end = nl
+                          else {
+                              val period = text.lastIndexOf('.', end)
+                              if (period > start + (maxChars / 2)) end = period + 1
+                          }
+                      }
+                      chunks.add(text.substring(start, end))
+                      start = end
                   }
                   return chunks
               }
@@ -1173,8 +1177,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v24.0
-          name: HindiScan v24.0 Update (Strict JSON)
+          tag_name: v25.0
+          name: HindiScan v25.0 Update (Smaller Chunks)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
