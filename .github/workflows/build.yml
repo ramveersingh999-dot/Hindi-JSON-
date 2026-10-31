@@ -359,7 +359,7 @@ jobs:
               }
 
               private fun callGemini(prompt: String): String {
-                  val models = listOf("gemini-2.0-flash-exp", "gemini-1.5-flash-latest")
+                  val models = listOf("gemini-1.5-flash", "gemini-1.5-pro")
                   for (model in models) {
                       val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${keys.gemini}"
                       val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
@@ -661,10 +661,11 @@ jobs:
           }
           EOF
 
-          # --- 11. MainScreen.kt (Premium English UI) ---
+          # --- 11. MainScreen.kt (Fixed Import) ---
           cat << 'EOF' > $BASE_DIR/MainScreen.kt
           package com.example.hindiscan
           import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
           import androidx.compose.foundation.layout.*
           import androidx.compose.foundation.rememberScrollState
           import androidx.compose.foundation.shape.RoundedCornerShape
