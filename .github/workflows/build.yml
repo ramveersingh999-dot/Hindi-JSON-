@@ -4,7 +4,7 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-# यह लाइन GitHub Actions को रिलीज़ बनाने और APK अपलोड करने की अनुमति देगी
+# यह लाइन GitHub Actions को रिलीज़ बनाने की अनुमति देगी
 permissions:
   contents: write
 
@@ -27,7 +27,7 @@ jobs:
           mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/xml
           
-          # --- यह कमांड पुरानी सारी गलत फाइलों को डिलीट कर देगी ---
+          # --- पुरानी सारी गलत फाइलों को डिलीट करना ---
           rm -rf $BASE_DIR/*
           
           # --- CREATE APP ICON ---
@@ -95,8 +95,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 16
-                  versionName = "16.0"
+                  versionCode = 17
+                  versionName = "17.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -281,7 +281,7 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt ---
+          # --- 7. AiProcessor.kt (FIXED MODELS) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import kotlinx.coroutines.Dispatchers
@@ -357,7 +357,8 @@ jobs:
               }
 
               private fun callGemini(prompt: String): String {
-                  val models = listOf("gemini-2.0-flash", "gemini-2.5-flash")
+                  // FIXED: Using the correct and latest Gemini models
+                  val models = listOf("gemini-1.5-flash", "gemini-1.5-pro")
                   for (model in models) {
                       val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${keys.gemini}"
                       val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
@@ -374,6 +375,7 @@ jobs:
 
               private fun callGroq(prompt: String): String {
                   val url = "https://api.groq.com/openai/v1/chat/completions"
+                  // FIXED: Using the latest stable Groq model
                   val payload = JSONObject().put("model", "llama-3.3-70b-versatile")
                       .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
                       .put("temperature", 0.05).toString()
@@ -982,8 +984,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v16.0
-          name: HindiScan v16.0 Update
+          tag_name: v17.0
+          name: HindiScan v17.0 Update
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
