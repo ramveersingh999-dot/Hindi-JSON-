@@ -14,7 +14,7 @@ jobs:
       - name: Unzip Project Files
         run: |
           unzip Project.zip -d project_folder
-          
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -25,6 +25,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.6
+          cache: false
 
       - name: Build Debug APK
         run: |
