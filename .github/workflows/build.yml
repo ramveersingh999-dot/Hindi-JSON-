@@ -24,8 +24,7 @@ jobs:
           
           # --- CREATE APP ICON ---
           cat << 'EOF' > app/src/main/res/drawable/ic_launcher.xml
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp" android:height="108dp" android:viewportWidth="24" android:viewportHeight="24">
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="24" android:viewportHeight="24">
             <path android:fillColor="#9D7BFF" android:pathData="M17,3H7c-1.1,0 -1.99,0.9 -1.99,2L5,21c0,1.1 0.9,2 2,2h10c1.1,0 2,-0.9 2,-2V5c0,-1.1 -0.9,-2 -2,-2zM17,19H7V5h10v14zM10,7h4v2h-4zM10,11h4v2h-4zM10,15h4v2h-4z"/>
           </vector>
           EOF
@@ -37,15 +36,15 @@ jobs:
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.CAMERA" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
               <application
                   android:allowBackup="true"
                   android:icon="@drawable/ic_launcher"
                   android:label="HindiScan"
                   android:supportsRtl="true"
                   android:theme="@android:style/Theme.Material.NoActionBar">
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true">
+                  <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -70,8 +69,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "3.0"
+                  versionCode = 8
+                  versionName = "8.0"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -102,25 +101,22 @@ jobs:
           }
           EOF
 
-          # --- 3. Models.kt ---
+          # --- 3. Models.kt (Added lastSubject for Retry) ---
           cat << 'EOF' > $BASE_DIR/Models.kt
           package com.example.hindiscan
           import kotlinx.serialization.Serializable
           import android.net.Uri
-
           @Serializable
-          data class Question(
-              val topic: String = "General", val type: String = "hindi", val year: String = "", val board: String = "",
-              val q: String = "", val options: List<String> = emptyList(), val ans: Int = 0, val exp: String = ""
-          )
+          data class Question(val topic: String = "General", val type: String = "hindi", val year: String = "", val board: String = "", val q: String = "", val options: List<String> = emptyList(), val ans: Int = 0, val exp: String = "")
           @Serializable
           data class Subject(val name: String, val topic: String, val type: String)
           data class ScanUiState(
               val isProcessing: Boolean = false, val progressText: String = "", val progress: Float = 0f,
               val questions: List<Question> = emptyList(), val rawJson: String = "", val error: String? = null,
-              val savedMsg: String? = null, val pendingUris: List<Uri>? = null
+              val savedMsg: String? = null, val pendingUris: List<Uri>? = null, val lastSubject: Subject? = null
           )
           data class ExportResult(val folderName: String, val fileCount: Int, val questionCount: Int, val partCount: Int, val zipName: String)
+          data class ApiKeys(val gemini: String = "", val groq: String = "", val openai: String = "")
           EOF
 
           # --- 4. Theme.kt ---
@@ -130,7 +126,6 @@ jobs:
           import androidx.compose.material3.darkColorScheme
           import androidx.compose.runtime.Composable
           import androidx.compose.ui.graphics.Color
-
           private val PremiumDark = darkColorScheme(
               primary = Color(0xFF9D7BFF), onPrimary = Color(0xFF1A0033), primaryContainer = Color(0xFF3D2E66),
               onPrimaryContainer = Color(0xFFE8DDFF), secondary = Color(0xFF7DD3C0), onSecondary = Color(0xFF00382E),
@@ -151,19 +146,22 @@ jobs:
           import androidx.security.crypto.MasterKey
           import kotlinx.serialization.encodeToString
           import kotlinx.serialization.json.Json
-
           class AppStore(context: Context) {
-              private val prefs = EncryptedSharedPreferences.create(
-                  context, "secure_prefs", MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-                  EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+              private val prefs = EncryptedSharedPreferences.create(context, "secure_prefs", MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(), EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
+              fun getKeys(): ApiKeys = ApiKeys(
+                  gemini = prefs.getString("gemini_key", "") ?: "",
+                  groq = prefs.getString("groq_key", "") ?: "",
+                  openai = prefs.getString("openai_key", "") ?: ""
               )
-              fun getKey(): String = prefs.getString("gemini_key", "") ?: ""
-              fun saveKey(key: String) = prefs.edit().putString("gemini_key", key.trim()).apply()
-              fun clearKey() = prefs.edit().remove("gemini_key").apply()
-              private val defaultSubjects = listOf(
-                  Subject("हिंदी साहित्य", "हिंदी साहित्य", "hindi"), Subject("हिंदी व्याकरण", "हिंदी व्याकरण", "hindi"),
-                  Subject("संस्कृत व्याकरण", "संस्कृत व्याकरण", "sanskrit"), Subject("इतिहास", "इतिहास", "gs"), Subject("सामान्य ज्ञान", "सामान्य ज्ञान", "gs")
-              )
+              fun saveKeys(keys: ApiKeys) {
+                  prefs.edit().apply {
+                      putString("gemini_key", keys.gemini.trim())
+                      putString("groq_key", keys.groq.trim())
+                      putString("openai_key", keys.openai.trim())
+                  }.apply()
+              }
+              fun clearKeys() = prefs.edit().clear().apply()
+              private val defaultSubjects = listOf(Subject("हिंदी साहित्य", "हिंदी साहित्य", "hindi"), Subject("हिंदी व्याकरण", "हिंदी व्याकरण", "hindi"), Subject("संस्कृत व्याकरण", "संस्कृत व्याकरण", "sanskrit"), Subject("इतिहास", "इतिहास", "gs"), Subject("सामान्य ज्ञान", "सामान्य ज्ञान", "gs"))
               fun getSubjects(): List<Subject> {
                   val custom = prefs.getString("custom_subjects", "") ?: ""
                   if (custom.isBlank()) return defaultSubjects
@@ -177,11 +175,12 @@ jobs:
           }
           EOF
 
-          # --- 6. OcrEngine.kt (FIXED) ---
+          # --- 6. OcrEngine.kt ---
           cat << 'EOF' > $BASE_DIR/OcrEngine.kt
           package com.example.hindiscan
           import android.content.Context
           import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
           import android.graphics.Color
           import android.graphics.pdf.PdfRenderer
           import android.net.Uri
@@ -202,26 +201,27 @@ jobs:
           class OcrEngine(private val context: Context) {
               private val devanagari: TextRecognizer = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
               private val latin: TextRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-              
-              suspend fun recognize(uri: Uri): String = withContext(Dispatchers.IO) {
-                  // URI को Local File में कॉपी करें ताकि ML Kit उसे पढ़ सके
-                  val inputStream = context.contentResolver.openInputStream(uri)
-                  val tempFile = File.createTempFile("ocr_", ".tmp", context.cacheDir)
-                  inputStream?.use { input -> FileOutputStream(tempFile).use { output -> input.copyTo(output) } }
-                  
-                  val mimeType = context.contentResolver.getType(uri)
-                  val result = if (mimeType == "application/pdf") {
-                      recognizePdf(tempFile)
-                  } else {
-                      recognizeImage(tempFile)
-                  }
-                  tempFile.delete() // काम खत्म होने पर फाइल डिलीट करें
-                  result
-              }
 
-              private suspend fun recognizeImage(file: File): String {
-                  val image = InputImage.fromFilePath(context, Uri.fromFile(file))
-                  return pickBest(runRecognizer(devanagari, image), runRecognizer(latin, image))
+              suspend fun recognize(uri: Uri): String = withContext(Dispatchers.IO) {
+                  val mimeType = context.contentResolver.getType(uri)
+                  if (mimeType == "application/pdf") {
+                      val tempFile = File.createTempFile("ocr_", ".pdf", context.cacheDir)
+                      context.contentResolver.openInputStream(uri)?.use { input ->
+                          FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                      } ?: throw Exception("PDF फाइल नहीं खुल पाई।")
+                      val result = recognizePdf(tempFile)
+                      tempFile.delete()
+                      result
+                  } else {
+                      val inputStream = context.contentResolver.openInputStream(uri) ?: throw Exception("इमेज फाइल नहीं खुल पाई।")
+                      val bitmap = BitmapFactory.decodeStream(inputStream)
+                      inputStream.close()
+                      if (bitmap == null) throw Exception("इमेज को पढ़ा नहीं जा सका।")
+                      val image = InputImage.fromBitmap(bitmap, 0)
+                      val result = pickBest(runRecognizer(devanagari, image), runRecognizer(latin, image))
+                      bitmap.recycle()
+                      result
+                  }
               }
 
               private suspend fun recognizePdf(file: File): String = withContext(Dispatchers.IO) {
@@ -230,7 +230,8 @@ jobs:
                       pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
                       if (pfd != null) {
                           renderer = PdfRenderer(pfd)
-                          for (i in 0 until renderer.pageCount) {
+                          val pageCount = minOf(renderer.pageCount, 20)
+                          for (i in 0 until pageCount) {
                               renderer.openPage(i).use { page ->
                                   val bmp = Bitmap.createBitmap(page.width * 2, page.height * 2, Bitmap.Config.ARGB_8888)
                                   bmp.eraseColor(Color.WHITE); page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
@@ -255,7 +256,7 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt ---
+          # --- 7. AiProcessor.kt (Detailed API Error Reporting) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import kotlinx.coroutines.Dispatchers
@@ -270,19 +271,19 @@ jobs:
           import org.json.JSONObject
           import java.util.concurrent.TimeUnit
 
-          class AiProcessor(private val apiKey: String) {
+          class AiProcessor(private val keys: ApiKeys) {
               private val http = OkHttpClient.Builder().connectTimeout(60, TimeUnit.SECONDS).readTimeout(300, TimeUnit.SECONDS).build()
               private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-              private val models = listOf("gemini-2.0-flash-exp", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest")
-
+              
               suspend fun process(ocrText: String, subject: Subject, onProgress: (String, Float) -> Unit): List<Question> = withContext(Dispatchers.IO) {
-                  if (apiKey.isBlank()) throw IllegalStateException("API Key सेट नहीं है।")
-                  if (ocrText.isBlank()) return@withContext emptyList()
+                  if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) throw IllegalStateException("कोई भी API Key सेट नहीं है।")
+                  if (ocrText.isBlank()) throw IllegalStateException("OCR से कोई टेक्स्ट नहीं मिला। (स्कैन साफ नहीं है)")
+                  
                   val chunks = chunkText(ocrText, 14000)
                   val extracted = mutableListOf<Question>()
                   chunks.forEachIndexed { idx, chunk ->
                       onProgress("AI विश्लेषण ${idx + 1}/${chunks.size}…", (idx.toFloat() / chunks.size) * 0.5f)
-                      try { extracted += extractChunk(chunk, subject) } catch (_: Exception) {}
+                      extracted += extractChunk(chunk, subject) // Errors bubble up here
                   }
                   val deduped = dedupe(extracted); onProgress("${deduped.size} प्रश्न — सत्यापन…", 0.55f)
                   val verified = mutableListOf<Question>(); val batches = deduped.chunked(12)
@@ -304,8 +305,8 @@ jobs:
                   OCR TEXT: $chunk
               """.trimIndent()
 
-              private fun extractChunk(chunk: String, subject: Subject) = parseQuestions(callGemini(buildExtractPrompt(chunk, subject)))
-              private fun verifyBatch(batch: List<Question>) = parseQuestions(callGemini("""
+              private fun extractChunk(chunk: String, subject: Subject) = parseQuestions(callAi(buildExtractPrompt(chunk, subject)))
+              private fun verifyBatch(batch: List<Question>) = parseQuestions(callAi("""
                   You are a senior Hindi language auditor. FIX and FILTER this JSON array.
                   1. Correct spelling/grammar. 2. Translate English to Hindi. 3. Keep Sanskrit.
                   4. Remove answer leaks. 5. Exactly 4 unique options. 6. ans must be 0..3.
@@ -313,27 +314,78 @@ jobs:
                   INPUT: ${json.encodeToString(batch)}
               """.trimIndent()))
 
-              private fun callGemini(prompt: String): String {
-                  for (model in models) {
-                      try {
-                          val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
-                          val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-                              .put("generationConfig", JSONObject().put("temperature", 0.05).put("maxOutputTokens", 8192).put("responseMimeType", "application/json")).toString()
-                          http.newCall(Request.Builder().url(url).post(payload.toRequestBody("application/json".toMediaType())).build()).execute().use { resp ->
-                              if (resp.isSuccessful) {
-                                  val text = JSONObject(resp.body!!.string()).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
-                                  if (text.isNotBlank()) return text
-                              }
-                          }
-                      } catch (_: Exception) {}
+              private fun callAi(prompt: String): String {
+                  var errorMsg = ""
+                  if (keys.gemini.isNotBlank()) {
+                      try { return callGemini(prompt) } catch (e: Exception) { errorMsg += "Gemini: ${e.message}\n" }
                   }
-                  throw Exception("AI model call failed")
+                  if (keys.groq.isNotBlank()) {
+                      try { return callGroq(prompt) } catch (e: Exception) { errorMsg += "Groq: ${e.message}\n" }
+                  }
+                  if (keys.openai.isNotBlank()) {
+                      try { return callOpenAi(prompt) } catch (e: Exception) { errorMsg += "OpenAI: ${e.message}\n" }
+                  }
+                  throw Exception("API Failed:\n$errorMsg")
+              }
+
+              private fun callGemini(prompt: String): String {
+                  val models = listOf("gemini-2.0-flash-exp", "gemini-1.5-flash-latest")
+                  for (model in models) {
+                      val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${keys.gemini}"
+                      val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+                          .put("generationConfig", JSONObject().put("temperature", 0.05).put("maxOutputTokens", 8192).put("responseMimeType", "application/json")).toString()
+                      http.newCall(Request.Builder().url(url).post(payload.toRequestBody("application/json".toMediaType())).build()).execute().use { resp ->
+                          if (resp.isSuccessful) {
+                              val text = JSONObject(resp.body!!.string()).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
+                              if (text.isNotBlank()) return text
+                          } else if (resp.code == 429) {
+                              throw Exception("Daily Limit Reached (429)")
+                          } else if (resp.code == 400) {
+                              throw Exception("Invalid API Key (400)")
+                          }
+                      }
+                  }
+                  throw Exception("Gemini Error")
+              }
+
+              private fun callGroq(prompt: String): String {
+                  val url = "https://api.groq.com/openai/v1/chat/completions"
+                  val payload = JSONObject().put("model", "llama3-70b-8192")
+                      .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
+                      .put("temperature", 0.05).toString()
+                  val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.groq}").post(payload.toRequestBody("application/json".toMediaType())).build()
+                  http.newCall(req).execute().use { resp ->
+                      if (resp.isSuccessful) {
+                          val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
+                          if (text.isNotBlank()) return text
+                      } else if (resp.code == 429) {
+                          throw Exception("Limit Reached (429)")
+                      }
+                  }
+                  throw Exception("Groq Error")
+              }
+
+              private fun callOpenAi(prompt: String): String {
+                  val url = "https://api.openai.com/v1/chat/completions"
+                  val payload = JSONObject().put("model", "gpt-4o-mini")
+                      .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
+                      .put("temperature", 0.05).toString()
+                  val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.openai}").post(payload.toRequestBody("application/json".toMediaType())).build()
+                  http.newCall(req).execute().use { resp ->
+                      if (resp.isSuccessful) {
+                          val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
+                          if (text.isNotBlank()) return text
+                      } else if (resp.code == 401) {
+                          throw Exception("Invalid Key (401)")
+                      }
+                  }
+                  throw Exception("OpenAI Error")
               }
 
               private fun parseQuestions(raw: String): List<Question> {
                   var cleaned = raw.trim().replace("```json", "").replace("```", "").trim()
                   val start = cleaned.indexOf('['); val end = cleaned.lastIndexOf(']')
-                  if (start == -1 || end == -1 || end <= start) return emptyList()
+                  if (start == -1 || end == -1 || end <= start) throw Exception("AI ने सही JSON नहीं दिया। (Format Error)")
                   cleaned = cleaned.substring(start, end + 1)
                   return try {
                       val arr = JSONArray(cleaned); val list = mutableListOf<Question>()
@@ -342,17 +394,21 @@ jobs:
                               val obj = arr.getJSONObject(i); val q = obj.optString("q", "").trim(); val opts = obj.optJSONArray("options")
                               if (q.isNotBlank() && opts != null && opts.length() == 4) {
                                   val options = (0 until 4).map { opts.optString(it, "").trim() }
-                                  if (options.none { it.isBlank() }) list.add(Question(obj.optString("topic", "General"), obj.optString("type", "hindi"), obj.optString("year", ""), obj.optString("board", ""), q, options, obj.optInt("ans", 0).coerceIn(0, 3), obj.optString("exp", "")))
+                                  if (options.none { it.isBlank() }) {
+                                      val ans = obj.optInt("ans", 0).coerceIn(0, 3)
+                                      val exp = obj.optString("exp", "").trim().ifBlank { "सही उत्तर: ${options[ans]}" }
+                                      list.add(Question(obj.optString("topic", "General"), obj.optString("type", "hindi"), obj.optString("year", ""), obj.optString("board", ""), q, options, ans, exp))
+                                  }
                               }
                           } catch (_: Exception) {}
                       }
                       list
-                  } catch (_: Exception) { emptyList() }
+                  } catch (e: Exception) { throw Exception("JSON Parsing Failed.") }
               }
 
               fun validateQuestion(q: Question): Boolean {
                   if (q.q.isBlank() || q.options.size != 4 || q.options.any { it.isBlank() } || q.options.distinct().size != 4) return false
-                  if (q.ans !in 0..3 || q.exp.isBlank() || q.q.length < 8) return false
+                  if (q.ans !in 0..3 || q.q.length < 8) return false
                   if (q.options.filterIndexed { i, _ -> i != q.ans }.any { Regex("(उत्तर|answer|Ans)\\s*[:：]?\\s*[A-D1-4]", RegexOption.IGNORE_CASE).containsMatchIn(it) }) return false
                   return true
               }
@@ -391,7 +447,6 @@ jobs:
           import java.util.Locale
           import java.util.zip.ZipEntry
           import java.util.zip.ZipOutputStream
-
           class PackExporter(private val context: Context) {
               private val json = Json { prettyPrint = true; encodeDefaults = true }
               suspend fun export(questions: List<Question>, batchLabel: String = "Batch01"): ExportResult = withContext(Dispatchers.IO) {
@@ -404,7 +459,6 @@ jobs:
                   writeToDownloads("${baseName}_Pack", baseName, files)
                   ExportResult("Downloads/HindiScan_Packs/${baseName}_Pack", files.size + 1, questions.size, parts.size, "$baseName.zip")
               }
-
               private fun writeToDownloads(folderName: String, baseName: String, files: Map<String, String>) {
                   val zipFile = File(context.cacheDir, "$baseName.zip")
                   ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos -> for ((name, content) in files) { zos.putNextEntry(ZipEntry(name)); zos.write(content.toByteArray(Charsets.UTF_8)); zos.closeEntry() } }
@@ -425,7 +479,7 @@ jobs:
           }
           EOF
 
-          # --- 9. ScanViewModel.kt ---
+          # --- 9. ScanViewModel.kt (Added Retry Logic) ---
           cat << 'EOF' > $BASE_DIR/ScanViewModel.kt
           package com.example.hindiscan
           import android.app.Activity
@@ -439,6 +493,7 @@ jobs:
           import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
           import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
           import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.Job
           import kotlinx.coroutines.flow.MutableStateFlow
           import kotlinx.coroutines.flow.asStateFlow
           import kotlinx.coroutines.launch
@@ -449,6 +504,8 @@ jobs:
           class ScanViewModel(app: Application) : AndroidViewModel(app) {
               private val ocr = OcrEngine(app); private val exporter = PackExporter(app); val store = AppStore(app)
               private val _state = MutableStateFlow(ScanUiState()); val state = _state.asStateFlow()
+              private var processingJob: Job? = null
+
               fun startScanner(activity: Activity, launch: (IntentSenderRequest) -> Unit) {
                   val options = GmsDocumentScannerOptions.Builder().setGalleryImportAllowed(true).setPageLimit(200)
                       .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG, GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
@@ -457,18 +514,33 @@ jobs:
                       .addOnSuccessListener { launch(IntentSenderRequest.Builder(it).build()) }
                       .addOnFailureListener { e -> _state.value = _state.value.copy(error = "स्कैनर त्रुटि: ${e.message}") }
               }
-              fun onPdfSelected(uri: Uri) { _state.value = _state.value.copy(pendingUris = listOf(uri)) }
+              fun onPdfSelected(uri: Uri) { _state.value = ScanUiState(pendingUris = listOf(uri)) }
               fun onScanResult(data: Intent?) {
                   val result = GmsDocumentScanningResult.fromActivityResultIntent(data) ?: return
                   val uris = mutableListOf<Uri>(); result.pages?.forEach { uris.add(it.imageUri) }; result.pdf?.let { uris.add(it.uri) }
                   if (uris.isEmpty()) { _state.value = _state.value.copy(error = "कोई पृष्ठ नहीं मिला।"); return }
-                  _state.value = _state.value.copy(pendingUris = uris)
+                  _state.value = ScanUiState(pendingUris = uris)
               }
+              
               fun processWithSubject(subject: Subject) {
-                  val uris = _state.value.pendingUris ?: return; val apiKey = store.getKey()
-                  if (apiKey.isBlank()) { _state.value = _state.value.copy(pendingUris = null, error = "पहले ⚙ API सेटिंग्स में Gemini API Key जोड़ें।"); return }
-                  viewModelScope.launch {
-                      _state.value = ScanUiState(isProcessing = true, progressText = "OCR शुरू…")
+                  val uris = _state.value.pendingUris ?: return; val keys = store.getKeys()
+                  if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) { 
+                      _state.value = _state.value.copy(pendingUris = null, lastSubject = subject, error = "कृपया पहले ⚙ API सेटिंग्स में कम से कम एक API Key जोड़ें।"); return 
+                  }
+                  _state.value = _state.value.copy(lastSubject = subject) // Save for retry
+                  runProcessing(uris, subject, keys)
+              }
+
+              fun retryProcessing() {
+                  val uris = _state.value.pendingUris ?: return
+                  val subject = _state.value.lastSubject ?: return
+                  val keys = store.getKeys()
+                  runProcessing(uris, subject, keys)
+              }
+
+              private fun runProcessing(uris: List<Uri>, subject: Subject, keys: ApiKeys) {
+                  processingJob = viewModelScope.launch {
+                      _state.value = _state.value.copy(isProcessing = true, error = null, progressText = "OCR शुरू…", progress = 0f)
                       try {
                           val sb = StringBuilder()
                           uris.forEachIndexed { idx, uri ->
@@ -476,14 +548,24 @@ jobs:
                               sb.append(ocr.recognize(uri)).append("\n\n")
                           }
                           val ocrText = sb.toString()
-                          if (ocrText.isBlank()) { _state.value = ScanUiState(error = "OCR से कोई टेक्स्ट नहीं मिला।"); return@launch }
-                          val questions = withContext(Dispatchers.IO) { AiProcessor(apiKey).process(ocrText, subject) { msg, prog -> _state.value = _state.value.copy(progressText = msg, progress = 0.15f + prog * 0.85f) } }
-                          if (questions.isEmpty()) { _state.value = ScanUiState(error = "कोई मान्य प्रश्न नहीं मिला।"); return@launch }
+                          if (ocrText.isBlank()) throw Exception("OCR से कोई टेक्स्ट नहीं निकला। इमेज साफ नहीं है।")
+                          
+                          val questions = withContext(Dispatchers.IO) { AiProcessor(keys).process(ocrText, subject) { msg, prog -> _state.value = _state.value.copy(progressText = msg, progress = 0.15f + prog * 0.85f) } }
+                          if (questions.isEmpty()) throw Exception("AI ने इस पेज से कोई प्रश्न नहीं निकाला। हो सकता है पेज में सिर्फ सिलेबस या सामान्य टेक्स्ट हो।")
+                          
                           val jsonStr = Json { prettyPrint = true; encodeDefaults = true }.encodeToString(questions)
-                          _state.value = ScanUiState(questions = questions, rawJson = jsonStr, progressText = "तैयार: ${questions.size} प्रश्न", progress = 1f)
-                      } catch (e: Exception) { _state.value = ScanUiState(error = e.message ?: "अज्ञात त्रुटि") }
+                          _state.value = _state.value.copy(questions = questions, rawJson = jsonStr, progressText = "तैयार: ${questions.size} प्रश्न", progress = 1f, isProcessing = false)
+                      } catch (e: Exception) { 
+                          if (e is kotlinx.coroutines.CancellationException) {
+                              _state.value = _state.value.copy(isProcessing = false, error = "प्रोसेसिंग रद्द कर दी गई।")
+                          } else {
+                              _state.value = _state.value.copy(isProcessing = false, error = e.message ?: "अज्ञात त्रुटि") 
+                          }
+                      }
                   }
               }
+
+              fun cancelProcessing() { processingJob?.cancel(); processingJob = null; _state.value = _state.value.copy(isProcessing = false, error = "प्रोसेसिंग रद्द कर दी गई।") }
               fun export() {
                   val questions = _state.value.questions
                   if (questions.isEmpty()) { _state.value = _state.value.copy(error = "पहले कोई दस्तावेज़ स्कैन करें।"); return }
@@ -523,17 +605,19 @@ jobs:
                   setContent {
                       HindiScanTheme {
                           val state by vm.state.collectAsState()
-                          var currentKey by remember { mutableStateOf(vm.store.getKey()) }
+                          var apiKeys by remember { mutableStateOf(vm.store.getKeys()) }
                           var subjects by remember { mutableStateOf(vm.store.getSubjects()) }
                           ScanScreen(
-                              state = state, apiKey = currentKey, subjects = subjects,
+                              state = state, keys = apiKeys, subjects = subjects,
                               onStartScan = { vm.startScanner(this) { launcher.launch(it) } },
                               onPickPdf = { pdfLauncher.launch("application/pdf") },
-                              onSaveKey = { currentKey = it; vm.store.saveKey(it) },
-                              onRemoveKey = { currentKey = ""; vm.store.clearKey() },
+                              onSaveKeys = { keys -> apiKeys = keys; vm.store.saveKeys(keys) },
+                              onRemoveKeys = { apiKeys = ApiKeys(); vm.store.clearKeys() },
                               onExport = { vm.export() },
                               onSubjectSelected = { vm.processWithSubject(it) },
                               onCancelSelection = { vm.cancelSelection() },
+                              onCancelProcessing = { vm.cancelProcessing() },
+                              onRetry = { vm.retryProcessing() },
                               onAddSubject = { sub -> vm.store.saveCustomSubject(sub); subjects = vm.store.getSubjects() }
                           )
                       }
@@ -542,7 +626,7 @@ jobs:
           }
           EOF
 
-          # --- 11. MainScreen.kt ---
+          # --- 11. MainScreen.kt (Error UI + Retry Button) ---
           cat << 'EOF' > $BASE_DIR/MainScreen.kt
           package com.example.hindiscan
           import androidx.compose.foundation.background
@@ -567,23 +651,27 @@ jobs:
           @OptIn(ExperimentalMaterial3Api::class)
           @Composable
           fun ScanScreen(
-              state: ScanUiState, apiKey: String, subjects: List<Subject>,
-              onStartScan: () -> Unit, onPickPdf: () -> Unit, onSaveKey: (String) -> Unit, onRemoveKey: () -> Unit,
-              onExport: () -> Unit, onSubjectSelected: (Subject) -> Unit, onCancelSelection: () -> Unit, onAddSubject: (Subject) -> Unit
+              state: ScanUiState, keys: ApiKeys, subjects: List<Subject>,
+              onStartScan: () -> Unit, onPickPdf: () -> Unit, onSaveKeys: (ApiKeys) -> Unit, onRemoveKeys: () -> Unit,
+              onExport: () -> Unit, onSubjectSelected: (Subject) -> Unit, onCancelSelection: () -> Unit, onCancelProcessing: () -> Unit, onRetry: () -> Unit, onAddSubject: (Subject) -> Unit
           ) {
               var showSettings by remember { mutableStateOf(false) }
               var showAddSubject by remember { mutableStateOf(false) }
 
               if (showSettings) {
-                  var keyInput by remember { mutableStateOf(apiKey) }
+                  var geminiKey by remember { mutableStateOf(keys.gemini) }
+                  var groqKey by remember { mutableStateOf(keys.groq) }
+                  var openAiKey by remember { mutableStateOf(keys.openai) }
                   AlertDialog(
-                      onDismissRequest = { showSettings = false }, title = { Text("Gemini API Key") },
-                      text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                          Text("Google AI Studio से free API Key लें", style = MaterialTheme.typography.bodySmall)
-                          OutlinedTextField(value = keyInput, onValueChange = { keyInput = it }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                      onDismissRequest = { showSettings = false }, title = { Text("API Keys (Multi-AI)") },
+                      text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                          Text("कम से कम एक Key जरूरी है।", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                          OutlinedTextField(value = geminiKey, onValueChange = { geminiKey = it }, label = { Text("Gemini API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                          OutlinedTextField(value = groqKey, onValueChange = { groqKey = it }, label = { Text("Groq API Key (Llama 3)") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                          OutlinedTextField(value = openAiKey, onValueChange = { openAiKey = it }, label = { Text("OpenAI API Key (ChatGPT)") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
                       } },
-                      confirmButton = { Button(onClick = { onSaveKey(keyInput); showSettings = false }) { Text("सेव करें") } },
-                      dismissButton = { if (apiKey.isNotBlank()) TextButton(onClick = { onRemoveKey(); keyInput = ""; showSettings = false }) { Text("हटाएँ", color = MaterialTheme.colorScheme.error) } }
+                      confirmButton = { Button(onClick = { onSaveKeys(ApiKeys(geminiKey, groqKey, openAiKey)); showSettings = false }) { Text("सेव करें") } },
+                      dismissButton = { if (keys.gemini.isNotBlank() || keys.groq.isNotBlank() || keys.openai.isNotBlank()) TextButton(onClick = { onRemoveKeys(); showSettings = false }) { Text("हटाएँ", color = MaterialTheme.colorScheme.error) } }
                   )
               }
 
@@ -601,7 +689,7 @@ jobs:
                   )
               }
 
-              if (state.pendingUris != null) {
+              if (state.pendingUris != null && !state.isProcessing) {
                   AlertDialog(
                       onDismissRequest = onCancelSelection, title = { Text("सब्जेक्ट चुनें") },
                       text = { Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 400.dp)) {
@@ -617,26 +705,57 @@ jobs:
                   )
               }
 
+              val hasAnyKey = keys.gemini.isNotBlank() || keys.groq.isNotBlank() || keys.openai.isNotBlank()
+
               Scaffold(
-                  topBar = { TopAppBar(title = { Column { Text("HindiScan", fontWeight = FontWeight.Bold, fontSize = 22.sp); Text("AI-Pro · Verified Packs", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
+                  topBar = { TopAppBar(title = { Column { Text("HindiScan", fontWeight = FontWeight.Bold, fontSize = 22.sp); Text("Multi-AI Engine", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
                       IconButton(onClick = { showAddSubject = true }) { Text("➕", fontSize = 20.sp) }
-                      IconButton(onClick = { showSettings = true }) { val color = if (apiKey.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary; Text("⚙", fontSize = 20.sp, color = color) }
+                      IconButton(onClick = { showSettings = true }) { val color = if (!hasAnyKey) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary; Text("⚙", fontSize = 20.sp, color = color) }
                   }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)) }
               ) { pad ->
                   Column(Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                      if (apiKey.isBlank()) { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f))) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text("⚠️"); Spacer(Modifier.width(10.dp)); Text("API Key सेट नहीं है", color = MaterialTheme.colorScheme.error) } } }
+                      if (!hasAnyKey) { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f))) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text("⚠️"); Spacer(Modifier.width(10.dp)); Text("API Keys सेट नहीं हैं", color = MaterialTheme.colorScheme.error) } } }
                       
-                      Button(onClick = onStartScan, enabled = !state.isProcessing && apiKey.isNotBlank(), modifier = Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary))), colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)) {
+                      Button(onClick = onStartScan, enabled = !state.isProcessing && hasAnyKey, modifier = Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary))), colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)) {
                           Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(if (state.isProcessing) "प्रोसेसिंग…" else "📷  कैमरा से स्कैन करें", fontSize = 16.sp, fontWeight = FontWeight.SemiBold); if (!state.isProcessing) Text("किसी भी भाषा → शुद्ध हिंदी", fontSize = 11.sp) }
                       }
 
-                      OutlinedButton(onClick = onPickPdf, enabled = !state.isProcessing && apiKey.isNotBlank(), modifier = Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(16.dp)), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary)) {
+                      OutlinedButton(onClick = onPickPdf, enabled = !state.isProcessing && hasAnyKey, modifier = Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(16.dp)), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary)) {
                           Text("📄  मोबाइल से PDF चुनें", fontSize = 15.sp, fontWeight = FontWeight.Medium)
                       }
 
-                      if (state.isProcessing) { Card { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(12.dp)); Text(state.progressText, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(12.dp)); LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))) } } }
+                      if (state.isProcessing) { 
+                          Card { 
+                              Column(Modifier.padding(16.dp)) { 
+                                  Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(12.dp)); Text(state.progressText, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                                  Spacer(Modifier.height(12.dp))
+                                  LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)))
+                                  Spacer(Modifier.height(8.dp))
+                                  TextButton(onClick = onCancelProcessing, modifier = Modifier.fillMaxWidth()) {
+                                      Text("❌ प्रोसेसिंग रद्द करें", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                  }
+                              } 
+                          } 
+                      }
                       
-                      state.error?.let { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))) { Text("❌  $it", Modifier.padding(14.dp), color = MaterialTheme.colorScheme.error) } }
+                      state.error?.let { err -> 
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)), modifier = Modifier.fillMaxWidth()) { 
+                              Column(Modifier.padding(14.dp)) {
+                                  Text("❌ असली एरर (Error Details):", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                                  Spacer(Modifier.height(4.dp))
+                                  SelectionContainer { Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                                  
+                                  // RETRY BUTTON
+                                  if (state.pendingUris != null) {
+                                      Spacer(Modifier.height(12.dp))
+                                      Button(onClick = onRetry, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                                          Text("🔄 पुनः प्रयास करें (Retry)", color = Color.White)
+                                      }
+                                  }
+                              }
+                          } 
+                      }
+                      
                       state.savedMsg?.let { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))) { Text(it, Modifier.padding(14.dp), color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Medium) } }
 
                       if (state.questions.isNotEmpty()) {
