@@ -93,8 +93,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 23
-                  versionName = "23.0"
+                  versionCode = 24
+                  versionName = "24.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -171,7 +171,7 @@ jobs:
           fun HindiScanTheme(content: @Composable () -> Unit) { MaterialTheme(colorScheme = PremiumDark, content = content) }
           EOF
 
-          # --- 5. AppStore.kt (Added OpenAI Model Storage) ---
+          # --- 5. AppStore.kt ---
           cat << 'EOF' > $BASE_DIR/AppStore.kt
           package com.example.hindiscan
           import android.content.Context
@@ -333,7 +333,7 @@ jobs:
           }
           EOF
 
-          # --- 8. AiProcessor.kt (Self-Healing for ALL 3 AIs) ---
+          # --- 8. AiProcessor.kt (Smart JSON Parsing & Strict Prompts) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import android.content.Context
@@ -377,7 +377,7 @@ jobs:
               private fun buildExtractPrompt(chunk: String, targetLang: String): String {
                   val remotePrompt = store.getRemotePrompt()
                   if (remotePrompt.isNotBlank()) {
-                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk)
+                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk) + "\n\nCRITICAL: DO NOT output any conversational text. Output ONLY the JSON array starting with [ and ending with ]."
                   }
                   return """
                       You are a senior language expert. Extract EVERY authentic question from OCR text.
@@ -404,7 +404,7 @@ jobs:
                   You are a senior language auditor. FIX and FILTER this JSON array.
                   CRITICAL RULE: Ensure ALL text is in $targetLang language.
                   1. Correct spelling/grammar. 2. Remove answer leaks. 3. Exactly 4 unique options. 4. ans must be 0..3.
-                  5. Output ONLY JSON array of APPROVED questions.
+                  5. Output ONLY JSON array of APPROVED questions. DO NOT output any conversational text.
                   INPUT: ${json.encodeToString(batch)}
               """.trimIndent()))
 
@@ -416,7 +416,6 @@ jobs:
                   throw Exception("API Failed:\n$errorMsg")
               }
 
-              // --- SELF-HEALING GEMINI ---
               private fun callGemini(prompt: String): String {
                   var model = store.getSavedGeminiModel().ifBlank { "gemini-1.5-flash" }
                   try { return executeGeminiCall(model, prompt) } catch (e: Exception) {
@@ -459,7 +458,6 @@ jobs:
                   return "gemini-1.5-flash"
               }
 
-              // --- SELF-HEALING GROQ ---
               private fun callGroq(prompt: String): String {
                   var model = store.getSavedGroqModel().ifBlank { "openai/gpt-oss-120b" }
                   try { return executeGroqCall(model, prompt) } catch (e: Exception) {
@@ -505,7 +503,6 @@ jobs:
                   return "openai/gpt-oss-120b"
               }
 
-              // --- SELF-HEALING OPENAI ---
               private fun callOpenAi(prompt: String): String {
                   var model = store.getSavedOpenAiModel().ifBlank { "gpt-4o-mini" }
                   try { return executeOpenAiCall(model, prompt) } catch (e: Exception) {
@@ -542,10 +539,8 @@ jobs:
                               if (data != null) {
                                   for (i in 0 until data.length()) {
                                       val id = data.getJSONObject(i).optString("id")
-                                      // Look for the most capable and latest models
                                       if (id.startsWith("gpt-4o")) return id
                                   }
-                                  // Fallback to gpt-3.5 if 4o is not found
                                   for (i in 0 until data.length()) {
                                       val id = data.getJSONObject(i).optString("id")
                                       if (id.startsWith("gpt-3.5")) return id
@@ -557,11 +552,22 @@ jobs:
                   return "gpt-4o-mini"
               }
 
+              // SMART JSON PARSING
               private fun parseQuestions(raw: String): List<Question> {
+                  // 1. Remove Markdown code blocks
                   var cleaned = raw.trim().replace("```json", "").replace("```", "").trim()
-                  val start = cleaned.indexOf('['); val end = cleaned.lastIndexOf(']')
-                  if (start == -1 || end == -1 || end <= start) throw Exception("AI did not return valid JSON array.")
+                  
+                  // 2. Find the first '[' and the last ']'
+                  val start = cleaned.indexOf('[')
+                  val end = cleaned.lastIndexOf(']')
+                  
+                  if (start == -1 || end == -1 || end <= start) {
+                      throw Exception("AI did not return JSON array. Raw response start: ${cleaned.take(50)}...")
+                  }
+                  
+                  // 3. Extract only the JSON part
                   cleaned = cleaned.substring(start, end + 1)
+                  
                   return try {
                       val arr = JSONArray(cleaned); val list = mutableListOf<Question>()
                       for (i in 0 until arr.length()) {
@@ -578,7 +584,7 @@ jobs:
                           } catch (_: Exception) {}
                       }
                       list
-                  } catch (e: Exception) { throw Exception("JSON Parsing Failed.") }
+                  } catch (e: Exception) { throw Exception("JSON Parsing Failed. Error: ${e.message}") }
               }
 
               fun validateQuestion(q: Question): Boolean {
@@ -1167,8 +1173,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v23.0
-          name: HindiScan v23.0 Update (Full Self-Healing)
+          tag_name: v24.0
+          name: HindiScan v24.0 Update (Strict JSON)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
