@@ -4,6 +4,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+# यह लाइन GitHub Actions को रिलीज़ बनाने और APK अपलोड करने की अनुमति देगी
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -124,7 +128,7 @@ jobs:
           }
           EOF
 
-          # --- 3. Models.kt (Updated to match sample) ---
+          # --- 3. Models.kt ---
           cat << 'EOF' > $BASE_DIR/Models.kt
           package com.example.hindiscan
           import kotlinx.serialization.Serializable
@@ -277,7 +281,7 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt (Updated to match sample format) ---
+          # --- 7. AiProcessor.kt ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import kotlinx.coroutines.Dispatchers
@@ -413,7 +417,6 @@ jobs:
                                   if (options.none { it.isBlank() }) {
                                       val ans = obj.optInt("ans", 0).coerceIn(0, 3)
                                       val exp = obj.optString("exp", "").trim().ifBlank { "Correct Answer: ${options[ans]}" }
-                                      // Matches new Model Fields
                                       list.add(Question(
                                           obj.optString("topic", "General"), 
                                           obj.optString("type", "gs"), 
