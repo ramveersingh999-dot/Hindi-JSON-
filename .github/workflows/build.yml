@@ -15,6 +15,11 @@ jobs:
         run: |
           unzip Project.zip -d project_folder
 
+      - name: Auto-Inject ML Kit Dependencies
+        run: |
+          cd project_folder
+          sed -i '/dependencies {/a \    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")\n    implementation("com.google.mlkit:text-recognition:16.0.0")\n    implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")' app/build.gradle.kts
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
