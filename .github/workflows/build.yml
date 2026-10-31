@@ -93,8 +93,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 25
-                  versionName = "25.0"
+                  versionCode = 26
+                  versionName = "26.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -333,7 +333,7 @@ jobs:
           }
           EOF
 
-          # --- 8. AiProcessor.kt (FIXED CHUNKING & TOKEN LIMITS) ---
+          # --- 8. AiProcessor.kt (With Smart JSON Repair) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import android.content.Context
@@ -358,7 +358,6 @@ jobs:
                   if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) throw IllegalStateException("No API Keys found.")
                   if (ocrText.isBlank()) throw IllegalStateException("OCR returned empty text.")
                   
-                  // REDUCED CHUNK SIZE to prevent hitting output token limits
                   val chunks = chunkText(ocrText, 3500)
                   val extracted = mutableListOf<Question>()
                   chunks.forEachIndexed { idx, chunk ->
@@ -378,7 +377,7 @@ jobs:
               private fun buildExtractPrompt(chunk: String, targetLang: String): String {
                   val remotePrompt = store.getRemotePrompt()
                   if (remotePrompt.isNotBlank()) {
-                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk) + "\n\nCRITICAL: DO NOT output any conversational text. Output ONLY the JSON array starting with [ and ending with ]. Keep explanations brief if not provided in text."
+                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk) + "\n\nCRITICAL: DO NOT output any conversational text. Output ONLY the JSON array. Keep explanations brief (max 2 sentences) to avoid hitting token limits."
                   }
                   return """
                       You are a senior language expert. Extract EVERY authentic question from OCR text.
@@ -391,7 +390,7 @@ jobs:
                       4. "topic": Auto-detect and format like "सामान्य अध्ययन: [Specific Topic] ([Exam Name])".
                       5. "options": Exactly 4 unique strings. Match options format like "1-(b), 2-(a)".
                       6. "ans": Integer (0, 1, 2, or 3).
-                      7. "exp": Detailed explanation. (If missing from text, keep it brief).
+                      7. "exp": Detailed explanation. (If missing from text, keep it brief - max 2 sentences).
                       8. Match the following: Use HTML <table> format with border='1', cellpadding='6', style='border-collapse:collapse; width:100%; text-align:left; margin:8px 0;'.
                       9. Output ONLY a valid JSON array. NO markdown, NO ```json.
                       
@@ -405,7 +404,7 @@ jobs:
                   You are a senior language auditor. FIX and FILTER this JSON array.
                   CRITICAL RULE: Ensure ALL text is in $targetLang language.
                   1. Correct spelling/grammar. 2. Remove answer leaks. 3. Exactly 4 unique options. 4. ans must be 0..3.
-                  5. Output ONLY JSON array of APPROVED questions. DO NOT output any conversational text.
+                  5. Output ONLY JSON array of APPROVED questions.
                   INPUT: ${json.encodeToString(batch)}
               """.trimIndent()))
 
@@ -553,30 +552,59 @@ jobs:
                   return "gpt-4o-mini"
               }
 
-              // SMART JSON PARSING
+              // SMART JSON PARSING & REPAIR
               private fun parseQuestions(raw: String): List<Question> {
                   var cleaned = raw.trim().replace("```json", "").replace("```", "").trim()
                   val start = cleaned.indexOf('[')
-                  val end = cleaned.lastIndexOf(']')
-                  if (start == -1 || end == -1 || end <= start) throw Exception("AI did not return JSON array. Raw response start: ${cleaned.take(50)}...")
-                  cleaned = cleaned.substring(start, end + 1)
-                  return try {
-                      val arr = JSONArray(cleaned); val list = mutableListOf<Question>()
-                      for (i in 0 until arr.length()) {
-                          try {
-                              val obj = arr.getJSONObject(i); val q = obj.optString("q", "").trim(); val opts = obj.optJSONArray("options")
-                              if (q.isNotBlank() && opts != null && opts.length() == 4) {
-                                  val options = (0 until 4).map { opts.optString(it, "").trim() }
-                                  if (options.none { it.isBlank() }) {
-                                      val ans = obj.optInt("ans", 0).coerceIn(0, 3)
-                                      val exp = obj.optString("exp", "").trim().ifBlank { "Correct Answer: ${options[ans]}" }
-                                      list.add(Question(obj.optString("topic", "General"), obj.optString("type", "gs"), obj.optString("exam", ""), q, options, ans, exp))
-                                  }
-                              }
-                          } catch (_: Exception) {}
+                  if (start == -1) throw Exception("AI did not return JSON array.")
+                  cleaned = cleaned.substring(start)
+
+                  var arr: JSONArray? = null
+                  try {
+                      // Try parsing normally
+                      var end = cleaned.lastIndexOf(']')
+                      if (end != -1) {
+                          arr = JSONArray(cleaned.substring(0, end + 1))
                       }
-                      list
-                  } catch (e: Exception) { throw Exception("JSON Parsing Failed. Error: ${e.message}") }
+                  } catch (e: Exception) {
+                      // Ignore and attempt repair
+                  }
+
+                  // REPAIR LOGIC: If normal parse fails, drop the last (unterminated) object
+                  if (arr == null) {
+                      val lastCompleteBrace = cleaned.lastIndexOf('}')
+                      if (lastCompleteBrace != -1) {
+                          val repairedJson = cleaned.substring(0, lastCompleteBrace + 1) + "]"
+                          try {
+                              arr = JSONArray(repairedJson)
+                          } catch (e: Exception) {
+                              // If it STILL fails, try dropping the last comma
+                              val lastComma = cleaned.lastIndexOf("},")
+                              if (lastComma != -1) {
+                                  val fixedJson = cleaned.substring(0, lastComma + 1) + "]"
+                                  arr = JSONArray(fixedJson)
+                              }
+                          }
+                      }
+                  }
+
+                  if (arr == null) throw Exception("JSON Parsing Failed. AI output severely truncated.")
+
+                  val list = mutableListOf<Question>()
+                  for (i in 0 until arr.length()) {
+                      try {
+                          val obj = arr.getJSONObject(i); val q = obj.optString("q", "").trim(); val opts = obj.optJSONArray("options")
+                          if (q.isNotBlank() && opts != null && opts.length() == 4) {
+                              val options = (0 until 4).map { opts.optString(it, "").trim() }
+                              if (options.none { it.isBlank() }) {
+                                  val ans = obj.optInt("ans", 0).coerceIn(0, 3)
+                                  val exp = obj.optString("exp", "").trim().ifBlank { "Correct Answer: ${options[ans]}" }
+                                  list.add(Question(obj.optString("topic", "General"), obj.optString("type", "gs"), obj.optString("exam", ""), q, options, ans, exp))
+                              }
+                          }
+                      } catch (_: Exception) {}
+                  }
+                  return list
               }
 
               fun validateQuestion(q: Question): Boolean {
@@ -587,14 +615,12 @@ jobs:
               private fun dedupe(qs: List<Question>): List<Question> { val seen = HashSet<String>(); val out = mutableListOf<Question>(); for (q in qs) if (seen.add(normKey(q.q))) out.add(q); return out }
               private fun normKey(text: String) = text.lowercase().replace(Regex("<[^>]+>"), "").replace(Regex("[\\s\\p{Punct}]+"), "").trim()
               
-              // REDUCED CHUNK SIZE FUNCTION
               private fun chunkText(text: String, maxChars: Int): List<String> {
                   if (text.length <= maxChars) return listOf(text)
                   val chunks = mutableListOf<String>(); var start = 0
                   while (start < text.length) {
                       var end = minOf(start + maxChars, text.length)
                       if (end < text.length) {
-                          // Try to split at newline or period to keep context
                           val nl = text.lastIndexOf('\n', end)
                           if (nl > start + (maxChars / 2)) end = nl
                           else {
@@ -1177,8 +1203,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v25.0
-          name: HindiScan v25.0 Update (Smaller Chunks)
+          tag_name: v26.0
+          name: HindiScan v26.0 Update (JSON Repair)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
