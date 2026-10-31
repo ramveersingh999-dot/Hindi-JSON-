@@ -4,7 +4,6 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-# यह लाइन GitHub Actions को रिलीज़ बनाने की अनुमति देगी
 permissions:
   contents: write
 
@@ -27,7 +26,6 @@ jobs:
           mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/xml
           
-          # --- पुरानी सारी गलत फाइलों को डिलीट करना ---
           rm -rf $BASE_DIR/*
           
           # --- CREATE APP ICON ---
@@ -95,8 +93,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 17
-                  versionName = "17.0"
+                  versionCode = 20
+                  versionName = "20.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -172,7 +170,7 @@ jobs:
           fun HindiScanTheme(content: @Composable () -> Unit) { MaterialTheme(colorScheme = PremiumDark, content = content) }
           EOF
 
-          # --- 5. AppStore.kt ---
+          # --- 5. AppStore.kt (Added Dynamic Model Storage) ---
           cat << 'EOF' > $BASE_DIR/AppStore.kt
           package com.example.hindiscan
           import android.content.Context
@@ -180,9 +178,17 @@ jobs:
           import androidx.security.crypto.MasterKey
           class AppStore(context: Context) {
               private val prefs = EncryptedSharedPreferences.create(context, "secure_prefs", MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(), EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
+              
               fun getKeys(): ApiKeys = ApiKeys(gemini = prefs.getString("gemini_key", "") ?: "", groq = prefs.getString("groq_key", "") ?: "", openai = prefs.getString("openai_key", "") ?: "")
               fun saveKeys(keys: ApiKeys) { prefs.edit().apply { putString("gemini_key", keys.gemini.trim()); putString("groq_key", keys.groq.trim()); putString("openai_key", keys.openai.trim()) }.apply() }
               fun clearKeys() = prefs.edit().clear().apply()
+
+              // Auto-Update Models Storage
+              fun getSavedGeminiModel(): String = prefs.getString("gemini_model", "") ?: ""
+              fun saveGeminiModel(model: String) = prefs.edit().putString("gemini_model", model).apply()
+              
+              fun getSavedGroqModel(): String = prefs.getString("groq_model", "") ?: ""
+              fun saveGroqModel(model: String) = prefs.edit().putString("groq_model", model).apply()
           }
           EOF
 
@@ -281,9 +287,10 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt (FIXED MODELS) ---
+          # --- 7. AiProcessor.kt (Self-Healing AI Models) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
+          import android.content.Context
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.withContext
           import kotlinx.serialization.encodeToString
@@ -296,9 +303,10 @@ jobs:
           import org.json.JSONObject
           import java.util.concurrent.TimeUnit
 
-          class AiProcessor(private val keys: ApiKeys) {
+          class AiProcessor(private val context: Context, private val keys: ApiKeys) {
               private val http = OkHttpClient.Builder().connectTimeout(60, TimeUnit.SECONDS).readTimeout(300, TimeUnit.SECONDS).build()
               private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+              private val store = AppStore(context)
               
               suspend fun process(ocrText: String, targetLang: String, onProgress: (String, Float) -> Unit): List<Question> = withContext(Dispatchers.IO) {
                   if (keys.gemini.isBlank() && keys.groq.isBlank() && keys.openai.isBlank()) throw IllegalStateException("No API Keys found.")
@@ -356,27 +364,81 @@ jobs:
                   throw Exception("API Failed:\n$errorMsg")
               }
 
+              // --- SELF-HEALING GEMINI ---
               private fun callGemini(prompt: String): String {
-                  // FIXED: Using the correct and latest Gemini models
-                  val models = listOf("gemini-1.5-flash", "gemini-1.5-pro")
-                  for (model in models) {
-                      val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${keys.gemini}"
-                      val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-                          .put("generationConfig", JSONObject().put("temperature", 0.05).put("maxOutputTokens", 8192).put("responseMimeType", "application/json")).toString()
-                      http.newCall(Request.Builder().url(url).post(payload.toRequestBody("application/json".toMediaType())).build()).execute().use { resp ->
-                          if (resp.isSuccessful) {
-                              val text = JSONObject(resp.body!!.string()).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
-                              if (text.isNotBlank()) return text
-                          } else { throw Exception("HTTP ${resp.code}") }
+                  var model = store.getSavedGeminiModel().ifBlank { "gemini-1.5-flash" }
+                  try {
+                      return executeGeminiCall(model, prompt)
+                  } catch (e: Exception) {
+                      if (e.message?.contains("404") == true) {
+                          // 404 Error: Model is deprecated. Fetch new models.
+                          val newModel = fetchDynamicGeminiModel()
+                          if (newModel != null) {
+                              store.saveGeminiModel(newModel) // Auto-save new model
+                              return executeGeminiCall(newModel, prompt) // Retry with new model
+                          }
                       }
+                      throw e
                   }
-                  throw Exception("Gemini Failed")
               }
 
+              private fun executeGeminiCall(model: String, prompt: String): String {
+                  val url = "https://generativelanguage.googleapis.com/v1/models/$model:generateContent?key=${keys.gemini}"
+                  val payload = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+                      .put("generationConfig", JSONObject().put("temperature", 0.05).put("maxOutputTokens", 8192).put("responseMimeType", "application/json")).toString()
+                  http.newCall(Request.Builder().url(url).post(payload.toRequestBody("application/json".toMediaType())).build()).execute().use { resp ->
+                      if (resp.isSuccessful) {
+                          val text = JSONObject(resp.body!!.string()).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
+                          if (text.isNotBlank()) return text
+                          throw Exception("Empty response")
+                      } else {
+                          throw Exception("HTTP ${resp.code}")
+                      }
+                  }
+              }
+
+              private fun fetchDynamicGeminiModel(): String? {
+                  try {
+                      val url = "https://generativelanguage.googleapis.com/v1/models?key=${keys.gemini}"
+                      http.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+                          if (resp.isSuccessful) {
+                              val body = JSONObject(resp.body!!.string())
+                              val models = body.optJSONArray("models")
+                              if (models != null) {
+                                  for (i in 0 until models.length()) {
+                                      val name = models.getJSONObject(i).optString("name").replace("models/", "")
+                                      if (name.contains("gemini-1.5-flash") || name.contains("gemini-pro")) {
+                                          return name // Returns the first valid model found
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  } catch (e: Exception) { e.printStackTrace() }
+                  return "gemini-1.5-flash" // Final fallback
+              }
+
+              // --- SELF-HEALING GROQ ---
               private fun callGroq(prompt: String): String {
+                  var model = store.getSavedGroqModel().ifBlank { "llama-3.1-8b-instant" }
+                  try {
+                      return executeGroqCall(model, prompt)
+                  } catch (e: Exception) {
+                      if (e.message?.contains("404") == true || e.message?.contains("400") == true) {
+                          // 404/400 Error: Model is deprecated. Fetch new models.
+                          val newModel = fetchDynamicGroqModel()
+                          if (newModel != null) {
+                              store.saveGroqModel(newModel)
+                              return executeGroqCall(newModel, prompt)
+                          }
+                      }
+                      throw e
+                  }
+              }
+
+              private fun executeGroqCall(model: String, prompt: String): String {
                   val url = "https://api.groq.com/openai/v1/chat/completions"
-                  // FIXED: Using the latest stable Groq model
-                  val payload = JSONObject().put("model", "llama-3.3-70b-versatile")
+                  val payload = JSONObject().put("model", model)
                       .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
                       .put("temperature", 0.05).toString()
                   val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.groq}").post(payload.toRequestBody("application/json".toMediaType())).build()
@@ -384,11 +446,36 @@ jobs:
                       if (resp.isSuccessful) {
                           val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
                           if (text.isNotBlank()) return text
-                      } else { throw Exception("HTTP ${resp.code}") }
+                          throw Exception("Empty response")
+                      } else {
+                          throw Exception("HTTP ${resp.code}")
+                      }
                   }
-                  throw Exception("Groq Failed")
               }
 
+              private fun fetchDynamicGroqModel(): String? {
+                  try {
+                      val url = "https://api.groq.com/openai/v1/models"
+                      val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.groq}").build()
+                      http.newCall(req).execute().use { resp ->
+                          if (resp.isSuccessful) {
+                              val body = JSONObject(resp.body!!.string())
+                              val data = body.optJSONArray("data")
+                              if (data != null) {
+                                  for (i in 0 until data.length()) {
+                                      val id = data.getJSONObject(i).optString("id")
+                                      if (id.contains("llama-3") && !id.contains("guard")) {
+                                          return id // Returns the first valid llama-3 model found
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  } catch (e: Exception) { e.printStackTrace() }
+                  return "llama-3.1-8b-instant" // Final fallback
+              }
+
+              // --- OPENAI ---
               private fun callOpenAi(prompt: String): String {
                   val url = "https://api.openai.com/v1/chat/completions"
                   val payload = JSONObject().put("model", "gpt-4o-mini")
@@ -419,15 +506,7 @@ jobs:
                                   if (options.none { it.isBlank() }) {
                                       val ans = obj.optInt("ans", 0).coerceIn(0, 3)
                                       val exp = obj.optString("exp", "").trim().ifBlank { "Correct Answer: ${options[ans]}" }
-                                      list.add(Question(
-                                          obj.optString("topic", "General"), 
-                                          obj.optString("type", "gs"), 
-                                          obj.optString("exam", ""), 
-                                          q, 
-                                          options, 
-                                          ans, 
-                                          exp
-                                      ))
+                                      list.add(Question(obj.optString("topic", "General"), obj.optString("type", "gs"), obj.optString("exam", ""), q, options, ans, exp))
                                   }
                               }
                           } catch (_: Exception) {}
@@ -619,10 +698,16 @@ jobs:
               var currentBaseName: String = ""
 
               init {
+                  checkForUpdatesManually()
+              }
+
+              fun checkForUpdatesManually() {
                   viewModelScope.launch {
                       val updateInfo = updateChecker.checkForUpdate()
                       if (updateInfo != null) {
                           _state.value = _state.value.copy(updateUrl = updateInfo.second, updateVersion = updateInfo.first)
+                      } else {
+                          _state.value = _state.value.copy(savedMsg = "✓ App is up to date!")
                       }
                   }
               }
@@ -673,7 +758,7 @@ jobs:
                           val ocrText = sb.toString()
                           if (ocrText.isBlank()) throw Exception("OCR returned empty text. Image may be unclear.")
                           
-                          val questions = withContext(Dispatchers.IO) { AiProcessor(keys).process(ocrText, targetLang) { msg, prog -> _state.value = _state.value.copy(progressText = msg, progress = 0.15f + prog * 0.85f) } }
+                          val questions = withContext(Dispatchers.IO) { AiProcessor(getApplication(), keys).process(ocrText, targetLang) { msg, prog -> _state.value = _state.value.copy(progressText = msg, progress = 0.15f + prog * 0.85f) } }
                           if (questions.isEmpty()) throw Exception("AI could not extract any valid questions.")
                           
                           val jsonStr = Json { prettyPrint = true; encodeDefaults = true }.encodeToString(questions)
@@ -751,7 +836,8 @@ jobs:
                               onCancelSelection = { vm.cancelSelection() },
                               onCancelProcessing = { vm.cancelProcessing() },
                               onUpdateApp = { vm.triggerUpdate() },
-                              onDismissUpdate = { vm.dismissUpdate() }
+                              onDismissUpdate = { vm.dismissUpdate() },
+                              onCheckUpdate = { vm.checkForUpdatesManually() }
                           )
                       }
                   }
@@ -792,7 +878,7 @@ jobs:
               state: ScanUiState, keys: ApiKeys,
               onStartScan: () -> Unit, onPickPdf: () -> Unit, onSaveKeys: (ApiKeys) -> Unit, onRemoveKeys: () -> Unit,
               onPickFolder: () -> Unit, onLanguageSelected: (String) -> Unit, onCancelSelection: () -> Unit, onCancelProcessing: () -> Unit,
-              onUpdateApp: () -> Unit, onDismissUpdate: () -> Unit
+              onUpdateApp: () -> Unit, onDismissUpdate: () -> Unit, onCheckUpdate: () -> Unit
           ) {
               var showSettings by remember { mutableStateOf(false) }
 
@@ -817,7 +903,12 @@ jobs:
                           Text("At least one API key is required.", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
                           OutlinedTextField(value = geminiKey, onValueChange = { geminiKey = it }, label = { Text("Gemini API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
                           OutlinedTextField(value = groqKey, onValueChange = { groqKey = it }, label = { Text("Groq API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-                          OutlinedTextField(value = openAiKey, onValueChange = { openAiKey = it }, label = { Text("OpenAI API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+                          OutlinedTextField(value = openAiKey, onValueChange = { openAiKey = it }, label = { Text("OpenAI API Key (Requires Credit)") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+                          
+                          Spacer(Modifier.height(8.dp))
+                          TextButton(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth()) {
+                              Text("🔄 Check for App Updates", color = MaterialTheme.colorScheme.secondary)
+                          }
                       } },
                       confirmButton = { Button(onClick = { onSaveKeys(ApiKeys(geminiKey, groqKey, openAiKey)); showSettings = false }) { Text("Save Keys") } },
                       dismissButton = { if (keys.gemini.isNotBlank() || keys.groq.isNotBlank() || keys.openai.isNotBlank()) TextButton(onClick = { onRemoveKeys(); showSettings = false }) { Text("Clear All", color = MaterialTheme.colorScheme.error) } }
@@ -979,13 +1070,12 @@ jobs:
           cd project_folder
           gradle assembleDebug
 
-      # यह स्टेप APK को GitHub Releases में अपने आप अपलोड कर देगा
       - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v17.0
-          name: HindiScan v17.0 Update
+          tag_name: v20.0
+          name: HindiScan v20.0 Update (Self-Healing AI)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
