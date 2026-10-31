@@ -93,8 +93,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 21
-                  versionName = "21.0"
+                  versionCode = 23
+                  versionName = "23.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -171,7 +171,7 @@ jobs:
           fun HindiScanTheme(content: @Composable () -> Unit) { MaterialTheme(colorScheme = PremiumDark, content = content) }
           EOF
 
-          # --- 5. AppStore.kt ---
+          # --- 5. AppStore.kt (Added OpenAI Model Storage) ---
           cat << 'EOF' > $BASE_DIR/AppStore.kt
           package com.example.hindiscan
           import android.content.Context
@@ -186,10 +186,13 @@ jobs:
 
               fun getSavedGeminiModel(): String = prefs.getString("gemini_model", "") ?: ""
               fun saveGeminiModel(model: String) = prefs.edit().putString("gemini_model", model).apply()
+              
               fun getSavedGroqModel(): String = prefs.getString("groq_model", "") ?: ""
               fun saveGroqModel(model: String) = prefs.edit().putString("groq_model", model).apply()
+              
+              fun getSavedOpenAiModel(): String = prefs.getString("openai_model", "") ?: ""
+              fun saveOpenAiModel(model: String) = prefs.edit().putString("openai_model", model).apply()
 
-              // Remote Config Storage
               fun getRemotePrompt(): String = prefs.getString("remote_prompt", "") ?: ""
               fun saveRemotePrompt(prompt: String) = prefs.edit().putString("remote_prompt", prompt).apply()
               fun getGlobalMessage(): String = prefs.getString("global_msg", "") ?: ""
@@ -292,7 +295,7 @@ jobs:
           }
           EOF
 
-          # --- 7. RemoteConfigManager.kt (NEW) ---
+          # --- 7. RemoteConfigManager.kt ---
           cat << 'EOF' > $BASE_DIR/RemoteConfigManager.kt
           package com.example.hindiscan
           import android.content.Context
@@ -303,7 +306,6 @@ jobs:
           import org.json.JSONObject
 
           class RemoteConfigManager(private val context: Context) {
-              // You can change this URL to your own GitHub Gist or raw file link
               private val CONFIG_URL = "https://raw.githubusercontent.com/ramveersingh999-dot/Hindi-JSON-/main/config.json"
               private val store = AppStore(context)
 
@@ -331,7 +333,7 @@ jobs:
           }
           EOF
 
-          # --- 8. AiProcessor.kt (Uses Remote Prompt) ---
+          # --- 8. AiProcessor.kt (Self-Healing for ALL 3 AIs) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import android.content.Context
@@ -377,7 +379,6 @@ jobs:
                   if (remotePrompt.isNotBlank()) {
                       return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk)
                   }
-                  // Fallback Default Prompt
                   return """
                       You are a senior language expert. Extract EVERY authentic question from OCR text.
                       CRITICAL RULE: Output ALL extracted questions, options, and explanations STRICTLY in $targetLang language. 
@@ -415,6 +416,7 @@ jobs:
                   throw Exception("API Failed:\n$errorMsg")
               }
 
+              // --- SELF-HEALING GEMINI ---
               private fun callGemini(prompt: String): String {
                   var model = store.getSavedGeminiModel().ifBlank { "gemini-1.5-flash" }
                   try { return executeGeminiCall(model, prompt) } catch (e: Exception) {
@@ -457,8 +459,9 @@ jobs:
                   return "gemini-1.5-flash"
               }
 
+              // --- SELF-HEALING GROQ ---
               private fun callGroq(prompt: String): String {
-                  var model = store.getSavedGroqModel().ifBlank { "llama-3.1-8b-instant" }
+                  var model = store.getSavedGroqModel().ifBlank { "openai/gpt-oss-120b" }
                   try { return executeGroqCall(model, prompt) } catch (e: Exception) {
                       if (e.message?.contains("404") == true || e.message?.contains("400") == true) {
                           val newModel = fetchDynamicGroqModel()
@@ -493,18 +496,30 @@ jobs:
                               if (data != null) {
                                   for (i in 0 until data.length()) {
                                       val id = data.getJSONObject(i).optString("id")
-                                      if (id.contains("llama-3") && !id.contains("guard")) return id
+                                      if (!id.contains("whisper") && !id.contains("guard")) return id
                                   }
                               }
                           }
                       }
                   } catch (e: Exception) { e.printStackTrace() }
-                  return "llama-3.1-8b-instant"
+                  return "openai/gpt-oss-120b"
               }
 
+              // --- SELF-HEALING OPENAI ---
               private fun callOpenAi(prompt: String): String {
+                  var model = store.getSavedOpenAiModel().ifBlank { "gpt-4o-mini" }
+                  try { return executeOpenAiCall(model, prompt) } catch (e: Exception) {
+                      if (e.message?.contains("404") == true || e.message?.contains("400") == true) {
+                          val newModel = fetchDynamicOpenAiModel()
+                          if (newModel != null) { store.saveOpenAiModel(newModel); return executeOpenAiCall(newModel, prompt) }
+                      }
+                      throw e
+                  }
+              }
+
+              private fun executeOpenAiCall(model: String, prompt: String): String {
                   val url = "https://api.openai.com/v1/chat/completions"
-                  val payload = JSONObject().put("model", "gpt-4o-mini")
+                  val payload = JSONObject().put("model", model)
                       .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
                       .put("temperature", 0.05).toString()
                   val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.openai}").post(payload.toRequestBody("application/json".toMediaType())).build()
@@ -512,9 +527,34 @@ jobs:
                       if (resp.isSuccessful) {
                           val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
                           if (text.isNotBlank()) return text
+                          throw Exception("Empty response")
                       } else { throw Exception("HTTP ${resp.code}") }
                   }
-                  throw Exception("OpenAI Failed")
+              }
+
+              private fun fetchDynamicOpenAiModel(): String? {
+                  try {
+                      val url = "https://api.openai.com/v1/models"
+                      val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.openai}").build()
+                      http.newCall(req).execute().use { resp ->
+                          if (resp.isSuccessful) {
+                              val body = JSONObject(resp.body!!.string()); val data = body.optJSONArray("data")
+                              if (data != null) {
+                                  for (i in 0 until data.length()) {
+                                      val id = data.getJSONObject(i).optString("id")
+                                      // Look for the most capable and latest models
+                                      if (id.startsWith("gpt-4o")) return id
+                                  }
+                                  // Fallback to gpt-3.5 if 4o is not found
+                                  for (i in 0 until data.length()) {
+                                      val id = data.getJSONObject(i).optString("id")
+                                      if (id.startsWith("gpt-3.5")) return id
+                                  }
+                              }
+                          }
+                      }
+                  } catch (e: Exception) { e.printStackTrace() }
+                  return "gpt-4o-mini"
               }
 
               private fun parseQuestions(raw: String): List<Question> {
@@ -693,7 +733,7 @@ jobs:
           }
           EOF
 
-          # --- 11. ScanViewModel.kt (Added Remote Config Fetch) ---
+          # --- 11. ScanViewModel.kt ---
           cat << 'EOF' > $BASE_DIR/ScanViewModel.kt
           package com.example.hindiscan
           import android.app.Activity
@@ -725,9 +765,7 @@ jobs:
               var currentBaseName: String = ""
 
               init {
-                  // Fetch Remote Config and Check for Updates on startup
                   viewModelScope.launch {
-                      // 1. Fetch Remote Config (Prompts, messages)
                       val msg = remoteConfig.fetchConfig()
                       if (msg != null) {
                           _state.value = _state.value.copy(globalMessage = msg)
@@ -736,7 +774,6 @@ jobs:
                           if (cachedMsg.isNotBlank()) _state.value = _state.value.copy(globalMessage = cachedMsg)
                       }
                       
-                      // 2. Check for App Updates
                       val updateInfo = updateChecker.checkForUpdate()
                       if (updateInfo != null) {
                           _state.value = _state.value.copy(updateUrl = updateInfo.second, updateVersion = updateInfo.first)
@@ -890,7 +927,7 @@ jobs:
           }
           EOF
 
-          # --- 13. MainScreen.kt (Added Global Message Banner) ---
+          # --- 13. MainScreen.kt ---
           cat << 'EOF' > $BASE_DIR/MainScreen.kt
           package com.example.hindiscan
           import androidx.compose.foundation.background
@@ -994,7 +1031,6 @@ jobs:
               ) { pad ->
                   Column(Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                       
-                      // --- REMOTE CONFIG MESSAGE BANNER ---
                       state.globalMessage?.let { msg ->
                           Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)), shape = RoundedCornerShape(12.dp)) {
                               Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1131,8 +1167,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v21.0
-          name: HindiScan v21.0 Update (Remote Config)
+          tag_name: v23.0
+          name: HindiScan v23.0 Update (Full Self-Healing)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
