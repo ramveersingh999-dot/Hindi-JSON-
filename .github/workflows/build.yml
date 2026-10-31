@@ -13,7 +13,7 @@ jobs:
 
       - name: Unzip Project Files
         run: |
-          unzip HindiScan.zip
+          unzip Project.zip -d project_folder
           
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -25,16 +25,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.6
-          cache-disabled: true
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
 
       - name: Build Debug APK
-        run: gradle assembleDebug
+        run: |
+          cd project_folder
+          gradle assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: HindiScan-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: project_folder/app/build/outputs/apk/debug/app-debug.apk
