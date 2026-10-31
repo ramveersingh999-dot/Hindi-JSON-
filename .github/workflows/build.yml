@@ -15,10 +15,295 @@ jobs:
         run: |
           unzip Project.zip -d project_folder
 
-      - name: Auto-Inject ML Kit Dependencies
+      - name: Fix Code Files via Python
         run: |
-          cd project_folder
-          sed -i '/dependencies {/a \    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")\n    implementation("com.google.mlkit:text-recognition:16.0.0")\n    implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")' app/build.gradle.kts
+          python3 -c '
+          import os
+
+          # Fix build.gradle.kts
+          build_gradle = """plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.serialization")
+          }
+
+          android {
+              namespace = "com.example.hindiscan"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.hindiscan"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0"
+              }
+
+              buildFeatures { compose = true }
+              composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+              implementation("androidx.activity:activity-compose:1.8.2")
+              implementation(platform("androidx.compose:compose-bom:2024.02.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
+              implementation("com.google.mlkit:text-recognition:16.0.0")
+              implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+              implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+          }"""
+          
+          os.makedirs("project_folder/app", exist_ok=True)
+          with open("project_folder/app/build.gradle.kts", "w") as f:
+              f.write(build_gradle)
+
+          # Fix MainScreen.kt
+          main_screen = """package com.example.hindiscan
+
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.selection.SelectionContainer
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.PasswordVisualTransformation
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun ScanScreen(
+              state: ScanUiState,
+              apiKey: String,
+              subjects: List<Subject>,
+              onStartScan: () -> Unit,
+              onSaveKey: (String) -> Unit,
+              onRemoveKey: () -> Unit,
+              onExport: () -> Unit,
+              onSubjectSelected: (Subject) -> Unit,
+              onCancelSelection: () -> Unit,
+              onAddSubject: (Subject) -> Unit
+          ) {
+              var showSettings by remember { mutableStateOf(false) }
+              var showAddSubject by remember { mutableStateOf(false) }
+
+              if (showSettings) {
+                  var keyInput by remember { mutableStateOf(apiKey) }
+                  AlertDialog(
+                      onDismissRequest = { showSettings = false },
+                      title = { Text("Gemini API Key") },
+                      text = {
+                          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                              Text("Google AI Studio से free API Key लें: aistudio.google.com", style = MaterialTheme.typography.bodySmall)
+                              OutlinedTextField(
+                                  value = keyInput,
+                                  onValueChange = { keyInput = it },
+                                  label = { Text("API Key") },
+                                  visualTransformation = PasswordVisualTransformation(),
+                                  singleLine = true,
+                                  modifier = Modifier.fillMaxWidth()
+                              )
+                          }
+                      },
+                      confirmButton = { Button(onClick = { onSaveKey(keyInput); showSettings = false }) { Text("सेव करें") } },
+                      dismissButton = {
+                          if (apiKey.isNotBlank()) {
+                              TextButton(onClick = { onRemoveKey(); keyInput = ""; showSettings = false }) {
+                                  Text("हटाएँ", color = MaterialTheme.colorScheme.error)
+                              }
+                          }
+                      }
+                  )
+              }
+
+              if (showAddSubject) {
+                  var name by remember { mutableStateOf("") }
+                  var topic by remember { mutableStateOf("") }
+                  var type by remember { mutableStateOf("hindi") }
+                  AlertDialog(
+                      onDismissRequest = { showAddSubject = false },
+                      title = { Text("नया सब्जेक्ट जोड़ें") },
+                      text = {
+                          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                              OutlinedTextField(name, { name = it }, label = { Text("सब्जेक्ट नाम") }, modifier = Modifier.fillMaxWidth())
+                              OutlinedTextField(topic, { topic = it }, label = { Text("Topic टैग") }, modifier = Modifier.fillMaxWidth())
+                              OutlinedTextField(type, { type = it }, label = { Text("Type (hindi / gs / science)") }, modifier = Modifier.fillMaxWidth())
+                          }
+                      },
+                      confirmButton = { Button(onClick = { if (name.isNotBlank()) { onAddSubject(Subject(name, topic.ifBlank { name }, type)); showAddSubject = false } }) { Text("जोड़ें") } },
+                      dismissButton = { TextButton(onClick = { showAddSubject = false }) { Text("रद्द") } }
+                  )
+              }
+
+              if (state.pendingUris != null) {
+                  AlertDialog(
+                      onDismissRequest = onCancelSelection,
+                      title = { Text("सब्जेक्ट चुनें") },
+                      text = {
+                          Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 400.dp)) {
+                              Text("AI इसी टॉपिक में प्रश्न निकालेगा:", style = MaterialTheme.typography.bodySmall)
+                              Spacer(Modifier.height(12.dp))
+                              subjects.forEach { sub ->
+                                  Card(
+                                      modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                      onClick = { onSubjectSelected(sub) },
+                                      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                  ) {
+                                      Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                          Text(sub.name, style = MaterialTheme.typography.bodyLarge)
+                                          Spacer(Modifier.weight(1f))
+                                          AssistChip(onClick = { onSubjectSelected(sub) }, label = { Text(sub.type, fontSize = 10.sp) })
+                                      }
+                                  }
+                              }
+                          }
+                      },
+                      confirmButton = { TextButton(onClick = onCancelSelection) { Text("रद्द") } }
+                  )
+              }
+
+              Scaffold(
+                  topBar = {
+                      TopAppBar(
+                          title = {
+                              Column {
+                                  Text("HindiScan", fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                                  Text("AI-Pro · Verified Packs", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                              }
+                          },
+                          actions = {
+                              IconButton(onClick = { showAddSubject = true }) { Text("➕", fontSize = 20.sp) }
+                              IconButton(onClick = { showSettings = true }) {
+                                  val color = if (apiKey.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary
+                                  Text("⚙", fontSize = 20.sp, color = color)
+                              }
+                          },
+                          colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                      )
+                  }
+              ) { pad ->
+                  Column(
+                      Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()).fillMaxSize(),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      if (apiKey.isBlank()) {
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f))) {
+                              Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                  Text("⚠️", fontSize = 20.sp)
+                                  Spacer(Modifier.width(10.dp))
+                                  Text("API Key सेट नहीं है — ⚙ पर क्लिक करें", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium)
+                              }
+                          }
+                      }
+
+                      Button(
+                          onClick = onStartScan,
+                          enabled = !state.isProcessing && apiKey.isNotBlank(),
+                          modifier = Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).background(
+                              Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary))
+                          ),
+                          colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)
+                      ) {
+                          Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                              Text(if (state.isProcessing) "प्रोसेसिंग…" else "📷  स्कैन / PDF चुनें", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                              if (!state.isProcessing) Text("किसी भी भाषा → शुद्ध हिंदी", fontSize = 11.sp)
+                          }
+                      }
+
+                      if (state.isProcessing) {
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                              Column(Modifier.padding(16.dp)) {
+                                  Row(verticalAlignment = Alignment.CenterVertically) {
+                                      CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                      Spacer(Modifier.width(12.dp))
+                                      Text(state.progressText, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                  }
+                                  Spacer(Modifier.height(12.dp))
+                                  LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)))
+                              }
+                          }
+                      }
+
+                      state.error?.let {
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))) {
+                              Text("❌  $it", Modifier.padding(14.dp), color = MaterialTheme.colorScheme.error)
+                          }
+                      }
+
+                      state.savedMsg?.let {
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))) {
+                              Text(it, Modifier.padding(14.dp), color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Medium)
+                          }
+                      }
+
+                      if (state.questions.isNotEmpty()) {
+                          Spacer(Modifier.height(4.dp))
+                          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                              StatCard(Modifier.weight(1f), label = "प्रश्न", value = state.questions.size.toString())
+                              StatCard(Modifier.weight(1f), label = "टॉपिक", value = state.questions.map { it.topic }.distinct().size.toString())
+                          }
+                          Spacer(Modifier.height(8.dp))
+                          Button(
+                              onClick = onExport,
+                              modifier = Modifier.fillMaxWidth().height(52.dp),
+                              colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                          ) {
+                              Text("📦  Complete JSON Pack Download", fontWeight = FontWeight.SemiBold)
+                          }
+                          Spacer(Modifier.height(16.dp))
+                          Text("JSON Preview", style = MaterialTheme.typography.titleSmall)
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), modifier = Modifier.fillMaxWidth()) {
+                              SelectionContainer {
+                                  Text(
+                                      state.rawJson.take(3000) + if (state.rawJson.length > 3000) "\n\n… (पूरा JSON फ़ाइल में)" else "",
+                                      Modifier.padding(14.dp).heightIn(max = 300.dp).verticalScroll(rememberScrollState()),
+                                      style = MaterialTheme.typography.bodySmall, fontSize = 11.sp
+                                  )
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun StatCard(modifier: Modifier, label: String, value: String) {
+              Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                  Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                      Text(value, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                      Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  }
+              }
+          }"""
+          
+          os.makedirs("project_folder/app/src/main/java/com/example/hindiscan", exist_ok=True)
+          with open("project_folder/app/src/main/java/com/example/hindiscan/MainScreen.kt", "w") as f:
+              f.write(main_screen)
+          '
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
