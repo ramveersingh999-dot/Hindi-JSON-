@@ -93,8 +93,8 @@ jobs:
                   applicationId = "com.example.hindiscan"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 20
-                  versionName = "20.0"
+                  versionCode = 21
+                  versionName = "21.0"
               }
               buildFeatures { compose = true; buildConfig = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -147,7 +147,8 @@ jobs:
               val isProcessing: Boolean = false, val progressText: String = "", val progress: Float = 0f,
               val questions: List<Question> = emptyList(), val rawJson: String = "", val error: String? = null,
               val savedMsg: String? = null, val pendingUris: List<Uri>? = null,
-              val updateUrl: String? = null, val updateVersion: String? = null
+              val updateUrl: String? = null, val updateVersion: String? = null,
+              val globalMessage: String? = null
           )
           data class ApiKeys(val gemini: String = "", val groq: String = "", val openai: String = "")
           EOF
@@ -170,7 +171,7 @@ jobs:
           fun HindiScanTheme(content: @Composable () -> Unit) { MaterialTheme(colorScheme = PremiumDark, content = content) }
           EOF
 
-          # --- 5. AppStore.kt (Added Dynamic Model Storage) ---
+          # --- 5. AppStore.kt ---
           cat << 'EOF' > $BASE_DIR/AppStore.kt
           package com.example.hindiscan
           import android.content.Context
@@ -183,12 +184,16 @@ jobs:
               fun saveKeys(keys: ApiKeys) { prefs.edit().apply { putString("gemini_key", keys.gemini.trim()); putString("groq_key", keys.groq.trim()); putString("openai_key", keys.openai.trim()) }.apply() }
               fun clearKeys() = prefs.edit().clear().apply()
 
-              // Auto-Update Models Storage
               fun getSavedGeminiModel(): String = prefs.getString("gemini_model", "") ?: ""
               fun saveGeminiModel(model: String) = prefs.edit().putString("gemini_model", model).apply()
-              
               fun getSavedGroqModel(): String = prefs.getString("groq_model", "") ?: ""
               fun saveGroqModel(model: String) = prefs.edit().putString("groq_model", model).apply()
+
+              // Remote Config Storage
+              fun getRemotePrompt(): String = prefs.getString("remote_prompt", "") ?: ""
+              fun saveRemotePrompt(prompt: String) = prefs.edit().putString("remote_prompt", prompt).apply()
+              fun getGlobalMessage(): String = prefs.getString("global_msg", "") ?: ""
+              fun saveGlobalMessage(msg: String) = prefs.edit().putString("global_msg", msg).apply()
           }
           EOF
 
@@ -287,7 +292,46 @@ jobs:
           }
           EOF
 
-          # --- 7. AiProcessor.kt (Self-Healing AI Models) ---
+          # --- 7. RemoteConfigManager.kt (NEW) ---
+          cat << 'EOF' > $BASE_DIR/RemoteConfigManager.kt
+          package com.example.hindiscan
+          import android.content.Context
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import org.json.JSONObject
+
+          class RemoteConfigManager(private val context: Context) {
+              // You can change this URL to your own GitHub Gist or raw file link
+              private val CONFIG_URL = "https://raw.githubusercontent.com/ramveersingh999-dot/Hindi-JSON-/main/config.json"
+              private val store = AppStore(context)
+
+              suspend fun fetchConfig(): String? = withContext(Dispatchers.IO) {
+                  try {
+                      val client = OkHttpClient()
+                      val request = Request.Builder().url(CONFIG_URL).build()
+                      client.newCall(request).execute().use { response ->
+                          if (response.isSuccessful) {
+                              val body = response.body?.string() ?: return@withContext null
+                              val json = JSONObject(body)
+                              
+                              val msg = json.optString("globalMessage", "")
+                              val prompt = json.optString("aiPromptTemplate", "")
+                              
+                              if (msg.isNotBlank()) store.saveGlobalMessage(msg)
+                              if (prompt.isNotBlank()) store.saveRemotePrompt(prompt)
+                              
+                              return@withContext msg
+                          }
+                      }
+                  } catch (e: Exception) { e.printStackTrace() }
+                  return@withContext null
+              }
+          }
+          EOF
+
+          # --- 8. AiProcessor.kt (Uses Remote Prompt) ---
           cat << 'EOF' > $BASE_DIR/AiProcessor.kt
           package com.example.hindiscan
           import android.content.Context
@@ -328,24 +372,31 @@ jobs:
                   onProgress("Complete: ${finalList.size} verified questions", 1f); finalList
               }
 
-              private fun buildExtractPrompt(chunk: String, targetLang: String) = """
-                  You are a senior language expert. Extract EVERY authentic question from OCR text.
-                  CRITICAL RULE: Output ALL extracted questions, options, and explanations STRICTLY in $targetLang language. 
-                  
-                  Formatting Rules:
-                  1. The JSON must have EXACTLY these keys: "topic", "type", "exam", "q", "options", "ans", "exp".
-                  2. "exam": Extract the exam name (e.g., "UPPSC LT Grade 2018").
-                  3. "q": The question text MUST end with [Exam Name]. Use <br> for line breaks.
-                  4. "topic": Auto-detect and format like "सामान्य अध्ययन: [Specific Topic] ([Exam Name])".
-                  5. "options": Exactly 4 unique strings. Match options format like "1-(b), 2-(a)".
-                  6. "ans": Integer (0, 1, 2, or 3).
-                  7. "exp": Detailed explanation ending with "यह प्रश्न [Exam Name] में पूछा गया था।".
-                  8. Match the following: Use HTML <table> format with border='1', cellpadding='6', style='border-collapse:collapse; width:100%; text-align:left; margin:8px 0;'.
-                  9. Output ONLY a valid JSON array. NO markdown, NO ```json.
-                  
-                  JSON format: [ { "topic": "...", "type": "gs", "exam": "...", "q": "...", "options": ["...","...","...","..."], "ans": 0, "exp": "..." } ]
-                  OCR TEXT: $chunk
-              """.trimIndent()
+              private fun buildExtractPrompt(chunk: String, targetLang: String): String {
+                  val remotePrompt = store.getRemotePrompt()
+                  if (remotePrompt.isNotBlank()) {
+                      return remotePrompt.replace("{{LANG}}", targetLang).replace("{{TEXT}}", chunk)
+                  }
+                  // Fallback Default Prompt
+                  return """
+                      You are a senior language expert. Extract EVERY authentic question from OCR text.
+                      CRITICAL RULE: Output ALL extracted questions, options, and explanations STRICTLY in $targetLang language. 
+                      
+                      Formatting Rules:
+                      1. The JSON must have EXACTLY these keys: "topic", "type", "exam", "q", "options", "ans", "exp".
+                      2. "exam": Extract the exam name (e.g., "UPPSC LT Grade 2018").
+                      3. "q": The question text MUST end with [Exam Name]. Use <br> for line breaks.
+                      4. "topic": Auto-detect and format like "सामान्य अध्ययन: [Specific Topic] ([Exam Name])".
+                      5. "options": Exactly 4 unique strings. Match options format like "1-(b), 2-(a)".
+                      6. "ans": Integer (0, 1, 2, or 3).
+                      7. "exp": Detailed explanation ending with "यह प्रश्न [Exam Name] में पूछा गया था।".
+                      8. Match the following: Use HTML <table> format with border='1', cellpadding='6', style='border-collapse:collapse; width:100%; text-align:left; margin:8px 0;'.
+                      9. Output ONLY a valid JSON array. NO markdown, NO ```json.
+                      
+                      JSON format: [ { "topic": "...", "type": "gs", "exam": "...", "q": "...", "options": ["...","...","...","..."], "ans": 0, "exp": "..." } ]
+                      OCR TEXT: $chunk
+                  """.trimIndent()
+              }
 
               private fun extractChunk(chunk: String, targetLang: String) = parseQuestions(callAi(buildExtractPrompt(chunk, targetLang)))
               private fun verifyBatch(batch: List<Question>, targetLang: String) = parseQuestions(callAi("""
@@ -364,19 +415,12 @@ jobs:
                   throw Exception("API Failed:\n$errorMsg")
               }
 
-              // --- SELF-HEALING GEMINI ---
               private fun callGemini(prompt: String): String {
                   var model = store.getSavedGeminiModel().ifBlank { "gemini-1.5-flash" }
-                  try {
-                      return executeGeminiCall(model, prompt)
-                  } catch (e: Exception) {
+                  try { return executeGeminiCall(model, prompt) } catch (e: Exception) {
                       if (e.message?.contains("404") == true) {
-                          // 404 Error: Model is deprecated. Fetch new models.
                           val newModel = fetchDynamicGeminiModel()
-                          if (newModel != null) {
-                              store.saveGeminiModel(newModel) // Auto-save new model
-                              return executeGeminiCall(newModel, prompt) // Retry with new model
-                          }
+                          if (newModel != null) { store.saveGeminiModel(newModel); return executeGeminiCall(newModel, prompt) }
                       }
                       throw e
                   }
@@ -391,9 +435,7 @@ jobs:
                           val text = JSONObject(resp.body!!.string()).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
                           if (text.isNotBlank()) return text
                           throw Exception("Empty response")
-                      } else {
-                          throw Exception("HTTP ${resp.code}")
-                      }
+                      } else { throw Exception("HTTP ${resp.code}") }
                   }
               }
 
@@ -402,35 +444,25 @@ jobs:
                       val url = "https://generativelanguage.googleapis.com/v1/models?key=${keys.gemini}"
                       http.newCall(Request.Builder().url(url).build()).execute().use { resp ->
                           if (resp.isSuccessful) {
-                              val body = JSONObject(resp.body!!.string())
-                              val models = body.optJSONArray("models")
+                              val body = JSONObject(resp.body!!.string()); val models = body.optJSONArray("models")
                               if (models != null) {
                                   for (i in 0 until models.length()) {
                                       val name = models.getJSONObject(i).optString("name").replace("models/", "")
-                                      if (name.contains("gemini-1.5-flash") || name.contains("gemini-pro")) {
-                                          return name // Returns the first valid model found
-                                      }
+                                      if (name.contains("gemini-1.5-flash") || name.contains("gemini-pro")) return name
                                   }
                               }
                           }
                       }
                   } catch (e: Exception) { e.printStackTrace() }
-                  return "gemini-1.5-flash" // Final fallback
+                  return "gemini-1.5-flash"
               }
 
-              // --- SELF-HEALING GROQ ---
               private fun callGroq(prompt: String): String {
                   var model = store.getSavedGroqModel().ifBlank { "llama-3.1-8b-instant" }
-                  try {
-                      return executeGroqCall(model, prompt)
-                  } catch (e: Exception) {
+                  try { return executeGroqCall(model, prompt) } catch (e: Exception) {
                       if (e.message?.contains("404") == true || e.message?.contains("400") == true) {
-                          // 404/400 Error: Model is deprecated. Fetch new models.
                           val newModel = fetchDynamicGroqModel()
-                          if (newModel != null) {
-                              store.saveGroqModel(newModel)
-                              return executeGroqCall(newModel, prompt)
-                          }
+                          if (newModel != null) { store.saveGroqModel(newModel); return executeGroqCall(newModel, prompt) }
                       }
                       throw e
                   }
@@ -447,9 +479,7 @@ jobs:
                           val text = JSONObject(resp.body!!.string()).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: ""
                           if (text.isNotBlank()) return text
                           throw Exception("Empty response")
-                      } else {
-                          throw Exception("HTTP ${resp.code}")
-                      }
+                      } else { throw Exception("HTTP ${resp.code}") }
                   }
               }
 
@@ -459,23 +489,19 @@ jobs:
                       val req = Request.Builder().url(url).addHeader("Authorization", "Bearer ${keys.groq}").build()
                       http.newCall(req).execute().use { resp ->
                           if (resp.isSuccessful) {
-                              val body = JSONObject(resp.body!!.string())
-                              val data = body.optJSONArray("data")
+                              val body = JSONObject(resp.body!!.string()); val data = body.optJSONArray("data")
                               if (data != null) {
                                   for (i in 0 until data.length()) {
                                       val id = data.getJSONObject(i).optString("id")
-                                      if (id.contains("llama-3") && !id.contains("guard")) {
-                                          return id // Returns the first valid llama-3 model found
-                                      }
+                                      if (id.contains("llama-3") && !id.contains("guard")) return id
                                   }
                               }
                           }
                       }
                   } catch (e: Exception) { e.printStackTrace() }
-                  return "llama-3.1-8b-instant" // Final fallback
+                  return "llama-3.1-8b-instant"
               }
 
-              // --- OPENAI ---
               private fun callOpenAi(prompt: String): String {
                   val url = "https://api.openai.com/v1/chat/completions"
                   val payload = JSONObject().put("model", "gpt-4o-mini")
@@ -534,7 +560,7 @@ jobs:
           }
           EOF
 
-          # --- 8. PackExporter.kt ---
+          # --- 9. PackExporter.kt ---
           cat << 'EOF' > $BASE_DIR/PackExporter.kt
           package com.example.hindiscan
           import android.content.Context
@@ -589,7 +615,7 @@ jobs:
           }
           EOF
 
-          # --- 9. UpdateChecker.kt ---
+          # --- 10. UpdateChecker.kt ---
           cat << 'EOF' > $BASE_DIR/UpdateChecker.kt
           package com.example.hindiscan
           import android.app.DownloadManager
@@ -667,7 +693,7 @@ jobs:
           }
           EOF
 
-          # --- 10. ScanViewModel.kt ---
+          # --- 11. ScanViewModel.kt (Added Remote Config Fetch) ---
           cat << 'EOF' > $BASE_DIR/ScanViewModel.kt
           package com.example.hindiscan
           import android.app.Activity
@@ -692,13 +718,30 @@ jobs:
           class ScanViewModel(app: Application) : AndroidViewModel(app) {
               private val ocr = OcrEngine(app); private val exporter = PackExporter(app); val store = AppStore(app)
               private val updateChecker = UpdateChecker(app)
+              private val remoteConfig = RemoteConfigManager(app)
               private val _state = MutableStateFlow(ScanUiState()); val state = _state.asStateFlow()
               private var processingJob: Job? = null
               var currentGeneratedFiles: Map<String, String> = emptyMap()
               var currentBaseName: String = ""
 
               init {
-                  checkForUpdatesManually()
+                  // Fetch Remote Config and Check for Updates on startup
+                  viewModelScope.launch {
+                      // 1. Fetch Remote Config (Prompts, messages)
+                      val msg = remoteConfig.fetchConfig()
+                      if (msg != null) {
+                          _state.value = _state.value.copy(globalMessage = msg)
+                      } else {
+                          val cachedMsg = store.getGlobalMessage()
+                          if (cachedMsg.isNotBlank()) _state.value = _state.value.copy(globalMessage = cachedMsg)
+                      }
+                      
+                      // 2. Check for App Updates
+                      val updateInfo = updateChecker.checkForUpdate()
+                      if (updateInfo != null) {
+                          _state.value = _state.value.copy(updateUrl = updateInfo.second, updateVersion = updateInfo.first)
+                      }
+                  }
               }
 
               fun checkForUpdatesManually() {
@@ -719,6 +762,7 @@ jobs:
               }
 
               fun dismissUpdate() { _state.value = _state.value.copy(updateUrl = null) }
+              fun dismissMessage() { _state.value = _state.value.copy(globalMessage = null) }
 
               fun startScanner(activity: Activity, launch: (IntentSenderRequest) -> Unit) {
                   val options = GmsDocumentScannerOptions.Builder().setGalleryImportAllowed(true).setPageLimit(200)
@@ -797,7 +841,7 @@ jobs:
           }
           EOF
 
-          # --- 11. MainActivity.kt ---
+          # --- 12. MainActivity.kt ---
           cat << 'EOF' > $BASE_DIR/MainActivity.kt
           package com.example.hindiscan
           import android.app.Activity
@@ -837,7 +881,8 @@ jobs:
                               onCancelProcessing = { vm.cancelProcessing() },
                               onUpdateApp = { vm.triggerUpdate() },
                               onDismissUpdate = { vm.dismissUpdate() },
-                              onCheckUpdate = { vm.checkForUpdatesManually() }
+                              onCheckUpdate = { vm.checkForUpdatesManually() },
+                              onDismissMessage = { vm.dismissMessage() }
                           )
                       }
                   }
@@ -845,7 +890,7 @@ jobs:
           }
           EOF
 
-          # --- 12. MainScreen.kt ---
+          # --- 13. MainScreen.kt (Added Global Message Banner) ---
           cat << 'EOF' > $BASE_DIR/MainScreen.kt
           package com.example.hindiscan
           import androidx.compose.foundation.background
@@ -878,7 +923,7 @@ jobs:
               state: ScanUiState, keys: ApiKeys,
               onStartScan: () -> Unit, onPickPdf: () -> Unit, onSaveKeys: (ApiKeys) -> Unit, onRemoveKeys: () -> Unit,
               onPickFolder: () -> Unit, onLanguageSelected: (String) -> Unit, onCancelSelection: () -> Unit, onCancelProcessing: () -> Unit,
-              onUpdateApp: () -> Unit, onDismissUpdate: () -> Unit, onCheckUpdate: () -> Unit
+              onUpdateApp: () -> Unit, onDismissUpdate: () -> Unit, onCheckUpdate: () -> Unit, onDismissMessage: () -> Unit
           ) {
               var showSettings by remember { mutableStateOf(false) }
 
@@ -949,6 +994,18 @@ jobs:
               ) { pad ->
                   Column(Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                       
+                      // --- REMOTE CONFIG MESSAGE BANNER ---
+                      state.globalMessage?.let { msg ->
+                          Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)), shape = RoundedCornerShape(12.dp)) {
+                              Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                  Text("📢", fontSize = 20.sp)
+                                  Spacer(Modifier.width(12.dp))
+                                  Text(msg, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f))
+                                  TextButton(onClick = onDismissMessage) { Text("✕", color = MaterialTheme.colorScheme.onSecondaryContainer) }
+                              }
+                          }
+                      }
+
                       if (!hasAnyKey) { 
                           Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), shape = RoundedCornerShape(12.dp)) { 
                               Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text("⚠️", fontSize = 24.sp); Spacer(Modifier.width(12.dp)); Text("No API keys configured.", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Medium) } 
@@ -1074,8 +1131,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: project_folder/app/build/outputs/apk/debug/app-debug.apk
-          tag_name: v20.0
-          name: HindiScan v20.0 Update (Self-Healing AI)
+          tag_name: v21.0
+          name: HindiScan v21.0 Update (Remote Config)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
